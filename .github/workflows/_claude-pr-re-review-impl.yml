@@ -1,0 +1,182 @@
+name: Claude Re-Review PR (impl)
+
+on:
+  workflow_call:
+    secrets:
+      claude_token:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+  id-token: write
+
+jobs:
+  re-review:
+    name: Re-Review PR #${{ github.event.issue.number }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      REVIEWER_LOGIN: claude[bot]
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    steps:
+      - name: Validate Claude token
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLAUDE_TOKEN: ${{ secrets.claude_token }}
+        run: |
+          if [[ -z "$CLAUDE_TOKEN" ]]; then
+            gh pr comment "${{ github.event.issue.number }}" \
+              --repo "${{ github.repository }}" \
+              --body "**AI re-review failed:** No Claude token configured for \`${{ github.event.comment.user.login }}\`. Ask an admin to add \`CLAUDE_TOKEN_<USERNAME>\` to repo secrets."
+            exit 1
+          fi
+
+      - name: Validate trigger and security
+        id: validate
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const comment = context.payload.comment;
+            const issue   = context.payload.issue;
+            const owner   = context.repo.owner;
+            const repo    = context.repo.repo;
+            const prNum   = issue.number;
+
+            // Exact match (trimmed, case-insensitive)
+            const body = comment.body.trim().toLowerCase();
+            if (body !== '/re-review') {
+              core.info('Not an exact /re-review comment — skipping');
+              core.setOutput('skip', 'true');
+              return;
+            }
+
+            // Security: PR author OR trusted association
+            const commenterLogin = comment.user.login;
+            const authorAssoc    = comment.author_association;
+            const pr = await github.rest.pulls.get({ owner, repo, pull_number: prNum });
+            const prAuthorLogin  = pr.data.user.login;
+
+            const trusted = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+            if (commenterLogin !== prAuthorLogin && !trusted.includes(authorAssoc)) {
+              core.info(`${commenterLogin} is not PR author or trusted member — skipping`);
+              core.setOutput('skip', 'true');
+              return;
+            }
+
+            // Idempotency: check for in-progress runs on the same PR
+            const selfRunId = parseInt(process.env.GITHUB_RUN_ID, 10);
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner, repo,
+              workflow_id: 'claude-pr-re-review.yml',
+              status: 'in_progress'
+            });
+            const alreadyRunning = runs.data.workflow_runs.some(r =>
+              r.id !== selfRunId && r.name.includes(`#${prNum}`)
+            );
+            if (alreadyRunning) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: prNum,
+                body: 'Re-review is already in progress for this PR. Please wait for it to complete.'
+              });
+              core.setOutput('skip', 'true');
+              return;
+            }
+
+            // Acknowledge with 👀
+            await github.rest.reactions.createForIssueComment({
+              owner, repo,
+              comment_id: comment.id,
+              content: 'eyes'
+            });
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNum,
+              body: `🔍 **AI re-review started.** [View workflow run](${process.env.RUN_URL})`
+            });
+
+            core.setOutput('skip',      'false');
+            core.setOutput('pr_url',    pr.data.html_url);
+            core.setOutput('pr_number', String(prNum));
+            core.setOutput('head_sha',  pr.data.head.sha);
+
+      - name: Checkout repository
+        if: steps.validate.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout review toolkit
+        if: steps.validate.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: elbertcl/code-review-toolkit
+          ref: ${{ github.workflow_sha }}
+          path: .review-toolkit
+          fetch-depth: 1
+
+      - name: Prepare review context
+        if: steps.validate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash .review-toolkit/scripts/prepare-review-context.sh \
+            "${{ github.event.issue.number }}" \
+            "${{ github.repository }}"
+
+      - name: Check for prior review
+        id: prior_review
+        if: steps.validate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.issue.number }}"
+          REPO="${{ github.repository }}"
+
+          REVIEW_COMMENTS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" \
+            --paginate \
+            --jq "[.[] | select(.user.login == \"${REVIEWER_LOGIN}\")] | length")
+
+          if [ "${REVIEW_COMMENTS}" -eq "0" ]; then
+            echo "No prior review found — blocking re-review"
+            gh pr comment "${PR_NUMBER}" \
+              --body "**AI re-review skipped:** No prior review found on this PR. Use \`/review\` first."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Found ${REVIEW_COMMENTS} prior review comments"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run re-review skill
+        if: steps.validate.outputs.skip != 'true' && steps.prior_review.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          claude_code_oauth_token: ${{ secrets.claude_token }}
+          prompt: |
+            AUTOMATED MODE: You are running as a GitHub Actions bot (${{ env.REVIEWER_LOGIN }}).
+            Skip Phase 3 approval gate — automatically proceed with the classification table without waiting for YES.
+            Skip Phase 7 approval gate — automatically post all new findings without waiting for YES.
+            All other phases execute exactly as documented in the skill.
+            REVIEWER_LOGIN is '${{ env.REVIEWER_LOGIN }}'.
+            The PR URL is: ${{ steps.validate.outputs.pr_url }}
+
+            Read the file `.review-toolkit/skills/re-review-pr/SKILL.md` and follow all its instructions exactly.
+          claude_args: |
+            --model claude-sonnet-4-6
+            --allowedTools "Bash(gh*),Read,Glob,Grep"
+            --max-turns 50
+
+      - name: Post failure comment
+        if: failure() && steps.validate.outputs.skip != 'true' && steps.prior_review.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "**AI re-review failed unexpectedly.** Check the [workflow run](${RUN_URL}) for details."

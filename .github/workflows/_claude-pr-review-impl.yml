@@ -1,0 +1,142 @@
+name: Claude PR Review (impl)
+
+on:
+  workflow_call:
+    secrets:
+      claude_token:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  claude-pr-review:
+    name: AI Review (Business · Performance · Maintainability)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      REVIEWER_LOGIN: claude[bot]
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    steps:
+      - name: Validate Claude token
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLAUDE_TOKEN: ${{ secrets.claude_token }}
+        run: |
+          if [[ -z "$CLAUDE_TOKEN" ]]; then
+            gh pr comment "${{ github.event.issue.number }}" \
+              --repo "${{ github.repository }}" \
+              --body "**AI review failed:** No Claude token configured for \`${{ github.event.comment.user.login }}\`. Ask an admin to add \`CLAUDE_TOKEN_<USERNAME>\` to repo secrets."
+            exit 1
+          fi
+
+      - name: Resolve PR metadata and acknowledge
+        id: pr-info
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner     = context.repo.owner;
+            const repo      = context.repo.repo;
+            const prNum     = context.payload.issue.number;
+            const commentId = context.payload.comment.id;
+
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNum });
+
+            if (pr.draft) {
+              core.info('PR is a draft — skipping');
+              core.setOutput('skip', 'true');
+              return;
+            }
+
+            await github.rest.reactions.createForIssueComment({
+              owner, repo, comment_id: commentId, content: 'eyes'
+            });
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNum,
+              body: `🔍 **AI review started** for commit \`${pr.head.sha.slice(0, 7)}\`. [View workflow run](${process.env.RUN_URL})`
+            });
+
+            core.setOutput('skip',     'false');
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('pr_url',   pr.html_url);
+
+      - name: Checkout repository
+        if: steps.pr-info.outputs.skip == 'false'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout review toolkit
+        if: steps.pr-info.outputs.skip == 'false'
+        uses: actions/checkout@v4
+        with:
+          repository: elbertcl/code-review-toolkit
+          ref: ${{ github.workflow_sha }}
+          path: .review-toolkit
+          fetch-depth: 1
+
+      - name: Prepare review context
+        if: steps.pr-info.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash .review-toolkit/scripts/prepare-review-context.sh \
+            "${{ github.event.issue.number }}" \
+            "${{ github.repository }}"
+
+      - name: Loop guard
+        id: loop_guard
+        if: steps.pr-info.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          HEAD_SHA="${{ steps.pr-info.outputs.head_sha }}"
+          PR_NUMBER="${{ github.event.issue.number }}"
+          REPO="${{ github.repository }}"
+
+          EXISTING=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" \
+            --paginate \
+            --jq "[.[] | select(.user.login == \"${REVIEWER_LOGIN}\" and .commit_id == \"${HEAD_SHA}\")] | length")
+
+          if [ "${EXISTING}" -gt "0" ]; then
+            echo "Loop guard: already reviewed commit ${HEAD_SHA} — skipping"
+            gh pr comment "${PR_NUMBER}" \
+              --body "**AI review skipped:** Commit \`${HEAD_SHA:0:7}\` was already reviewed. Push a new commit or use \`/re-review\` to force a fresh review."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Claude PR review
+        if: steps.pr-info.outputs.skip == 'false' && steps.loop_guard.outputs.skip == 'false'
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          claude_code_oauth_token: ${{ secrets.claude_token }}
+          prompt: |
+            AUTOMATED MODE: You are running as a GitHub Actions bot (${{ env.REVIEWER_LOGIN }}).
+            Skip Phase 2.5 (Human Approval Gate) — post all findings directly without waiting for approval.
+            Do not ask any questions. Complete all phases through Phase 4 (Emit Verdict) without interruption.
+            REVIEWER_LOGIN is '${{ env.REVIEWER_LOGIN }}'.
+            The PR URL is: ${{ steps.pr-info.outputs.pr_url }}
+
+            Read the file `.review-toolkit/skills/review-pr/SKILL.md` and follow all its instructions exactly.
+          claude_args: |
+            --model claude-sonnet-4-6
+            --allowedTools "Bash(gh*),Read,Glob,Grep"
+            --max-turns 50
+
+      - name: Post failure comment
+        if: failure() && steps.pr-info.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "**AI review failed unexpectedly.** Check the [workflow run](${RUN_URL}) for details."
