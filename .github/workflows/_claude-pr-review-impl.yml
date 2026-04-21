@@ -29,7 +29,7 @@ jobs:
           if [[ -z "$CLAUDE_TOKEN" ]]; then
             gh pr comment "${{ github.event.issue.number }}" \
               --repo "${{ github.repository }}" \
-              --body "**AI review failed:** No Claude token configured for \`${{ github.event.comment.user.login }}\`. Ask an admin to add \`CLAUDE_TOKEN_<USERNAME>\` to repo secrets."
+              --body "**AI review failed:** No Claude token configured for \`${{ github.event.comment.user.login }}\`. Ask an admin to add secret \`CLAUDE_TOKEN_${{ github.event.comment.user.login }}\` to this repo's secrets."
             exit 1
           fi
 
