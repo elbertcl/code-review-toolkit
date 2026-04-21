@@ -109,12 +109,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Extract toolkit ref
+        if: steps.validate.outputs.skip != 'true'
+        id: toolkit-ref
+        run: echo "ref=$(echo '${{ github.workflow_ref }}' | sed 's/.*@//')" >> $GITHUB_OUTPUT
+
       - name: Checkout review toolkit
         if: steps.validate.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           repository: elbertcl/code-review-toolkit
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ steps.toolkit-ref.outputs.ref }}
           path: .review-toolkit
           fetch-depth: 1
 
