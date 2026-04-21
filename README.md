@@ -4,12 +4,15 @@ AI-powered PR review infrastructure for astronautsid repos.
 
 ## Usage
 
-Two composite actions — reference them from any repo's workflow:
+One action, one command:
 
-| Action | Trigger command |
-|---|---|
-| `elbertcl/code-review-toolkit/review@v1` | `/review` comment on a PR |
-| `elbertcl/code-review-toolkit/re-review@v1` | `/re-review` comment on a PR |
+```yaml
+- uses: elbertcl/code-review-toolkit/review@v1
+```
+
+Comment `/review` on any PR. The action automatically detects:
+- **First-time review** — full review of the entire PR diff
+- **Re-review** — classifies prior threads as resolved/still-open, then reviews only the new diff since the last review
 
 ## Setup (per consuming repo)
 
@@ -23,7 +26,7 @@ CLAUDE_TOKEN_mariozul
 CLAUDE_TOKEN_faviansyahap
 ```
 
-### 2. Add trigger workflows
+### 2. Add one trigger workflow
 
 **`.github/workflows/claude-pr-review.yml`:**
 ```yaml
@@ -47,32 +50,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: elbertcl/code-review-toolkit/review@v1
-        with:
-          claude_token: ${{ secrets[format('CLAUDE_TOKEN_{0}', github.event.comment.user.login)] }}
-```
-
-**`.github/workflows/claude-pr-re-review.yml`:**
-```yaml
-name: Claude Re-Review PR
-
-on:
-  issue_comment:
-    types: [created]
-
-jobs:
-  re-review:
-    if: |
-      github.event.issue.pull_request != null &&
-      github.event.comment.body == '/re-review'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: elbertcl/code-review-toolkit/re-review@v1
         with:
           claude_token: ${{ secrets[format('CLAUDE_TOKEN_{0}', github.event.comment.user.login)] }}
 ```

@@ -1,5 +1,7 @@
 name: 'Claude PR Review'
-description: 'AI-powered PR review triggered by /review comment'
+description: >
+  AI-powered PR review triggered by /review. Automatically detects first-time
+  review vs re-review based on whether a prior PR Verdict comment exists on the PR.
 
 inputs:
   claude_token:
@@ -55,19 +57,62 @@ runs:
           core.setOutput('head_sha', pr.head.sha);
           core.setOutput('pr_url',   pr.html_url);
 
-    - name: Prepare review context
+    # ── Mode detection ──────────────────────────────────────────────────────
+    # No prior verdict comment → full review
+    # Prior verdict exists     → re-review (scoped diff + thread classification)
+    # Detection searches for "PR Verdict:" in issue comments — a definitive
+    # signal that a complete review cycle finished.
+    - name: Detect review mode
+      id: mode
       if: steps.pr-info.outputs.skip == 'false'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        bash "${{ github.action_path }}/../scripts/prepare-review-context.sh" \
-          "${{ github.event.issue.number }}" \
-          "${{ github.repository }}"
+        REVIEWER_LOGIN="claude[bot]"
+        PR_NUMBER="${{ github.event.issue.number }}"
+        REPO="${{ github.repository }}"
 
+        PRIOR=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+          --paginate \
+          --jq "[.[] | select(.user.login == \"${REVIEWER_LOGIN}\" and (.body | contains(\"PR Verdict:\")))] | length")
+
+        if [ "${PRIOR}" -eq "0" ]; then
+          echo "mode=review" >> $GITHUB_OUTPUT
+          echo "==> Mode: first-time review"
+        else
+          echo "mode=re-review" >> $GITHUB_OUTPUT
+          echo "==> Mode: re-review (${PRIOR} prior comment(s) found)"
+        fi
+
+    # ── Re-review: verify commenter is PR author or trusted member ──────────
+    - name: Re-review security check
+      id: security
+      if: steps.pr-info.outputs.skip == 'false' && steps.mode.outputs.mode == 're-review'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const owner          = context.repo.owner;
+          const repo           = context.repo.repo;
+          const prNum          = context.payload.issue.number;
+          const commenterLogin = context.payload.comment.user.login;
+          const authorAssoc    = context.payload.comment.author_association;
+
+          const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNum });
+          const trusted = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+
+          if (commenterLogin !== pr.user.login && !trusted.includes(authorAssoc)) {
+            core.info(`${commenterLogin} is not the PR author or a trusted member — skipping re-review`);
+            core.setOutput('skip', 'true');
+            return;
+          }
+          core.setOutput('skip', 'false');
+
+    # ── Review mode: guard against reviewing the same commit twice ──────────
     - name: Loop guard
       id: loop_guard
-      if: steps.pr-info.outputs.skip == 'false'
+      if: steps.pr-info.outputs.skip == 'false' && steps.mode.outputs.mode == 'review'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -84,14 +129,32 @@ runs:
         if [ "${EXISTING}" -gt "0" ]; then
           echo "Loop guard: already reviewed commit ${HEAD_SHA} — skipping"
           gh pr comment "${PR_NUMBER}" \
-            --body "**AI review skipped:** Commit \`${HEAD_SHA:0:7}\` was already reviewed. Push a new commit or use \`/re-review\` to force a fresh review."
+            --body "**AI review skipped:** Commit \`${HEAD_SHA:0:7}\` was already reviewed. Push a new commit to trigger a re-review."
           echo "skip=true" >> $GITHUB_OUTPUT
         else
           echo "skip=false" >> $GITHUB_OUTPUT
         fi
 
-    - name: Run Claude PR review
-      if: steps.pr-info.outputs.skip == 'false' && steps.loop_guard.outputs.skip == 'false'
+    # ── Context preparation (both modes) ────────────────────────────────────
+    - name: Prepare review context
+      if: |
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        bash "${{ github.action_path }}/../scripts/prepare-review-context.sh" \
+          "${{ github.event.issue.number }}" \
+          "${{ github.repository }}"
+
+    # ── Full review (first-time) ─────────────────────────────────────────────
+    - name: Run full review
+      if: |
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.mode.outputs.mode == 'review' &&
+        steps.loop_guard.outputs.skip != 'true'
       uses: anthropics/claude-code-action@v1
       env:
         GH_TOKEN: ${{ github.token }}
@@ -105,6 +168,31 @@ runs:
           The PR URL is: ${{ steps.pr-info.outputs.pr_url }}
 
           Read the file "${{ github.action_path }}/../skills/review-pr/SKILL.md" and follow all its instructions exactly.
+        claude_args: |
+          --model claude-sonnet-4-6
+          --allowedTools "Bash(gh*),Read,Glob,Grep"
+          --max-turns 50
+
+    # ── Re-review (subsequent /review after prior feedback) ─────────────────
+    - name: Run re-review
+      if: |
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.mode.outputs.mode == 're-review' &&
+        steps.security.outputs.skip != 'true'
+      uses: anthropics/claude-code-action@v1
+      env:
+        GH_TOKEN: ${{ github.token }}
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_token }}
+        prompt: |
+          AUTOMATED MODE: You are running as a GitHub Actions bot (claude[bot]).
+          Skip Phase 3 approval gate — automatically proceed with the classification table without waiting for YES.
+          Skip Phase 7 approval gate — automatically post all new findings without waiting for YES.
+          All other phases execute exactly as documented in the skill.
+          REVIEWER_LOGIN is 'claude[bot]'.
+          The PR URL is: ${{ steps.pr-info.outputs.pr_url }}
+
+          Read the file "${{ github.action_path }}/../skills/re-review-pr/SKILL.md" and follow all its instructions exactly.
         claude_args: |
           --model claude-sonnet-4-6
           --allowedTools "Bash(gh*),Read,Glob,Grep"
