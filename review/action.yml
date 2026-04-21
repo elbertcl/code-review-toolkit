@@ -149,6 +149,48 @@ runs:
           "${{ github.event.issue.number }}" \
           "${{ github.repository }}"
 
+    # ── Context summary comment (debug visibility) ──────────────────────────
+    - name: Post context summary
+      if: |
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        PR_NUMBER="${{ github.event.issue.number }}"
+        LINE_COUNT=$(wc -l < review_context.md | tr -d ' ')
+
+        DOMAINS=$(grep "^## Domain:" review_context.md | sed 's/^## Domain: //' || true)
+        DOMAIN_COUNT=$(echo "$DOMAINS" | grep -c '[^[:space:]]' || echo 0)
+
+        HAS_CLAUDE=$(grep -c "^## CLAUDE.md" review_context.md || true)
+        HAS_CROSS=$(grep -c "^## Cross-domain invariants" review_context.md || true)
+
+        ROWS=""
+        while IFS= read -r domain; do
+          [ -z "$domain" ] && continue
+          INV=$(awk "/^## Domain: ${domain}$/,/^## /" review_context.md | grep -c "^### Invariants" || true)
+          ARCH=$(awk "/^## Domain: ${domain}$/,/^## /" review_context.md | grep -c "^### Architecture" || true)
+          SPEC=$(awk "/^## Domain: ${domain}$/,/^## /" review_context.md | grep -c "^### Testspecs" || true)
+          IMPL=$(awk "/^## Domain: ${domain}$/,/^## /" review_context.md | grep -c "^### Active Implspec" || true)
+          ROWS="${ROWS}| \`${domain}\` | $([ "$INV" -gt 0 ] && echo "✅" || echo "—") | $([ "$ARCH" -gt 0 ] && echo "✅" || echo "—") | $([ "$SPEC" -gt 0 ] && echo "✅" || echo "—") | $([ "$IMPL" -gt 0 ] && echo "✅" || echo "—") |\n"
+        done <<< "$DOMAINS"
+
+        BASELINE=""
+        [ "$HAS_CLAUDE" -gt 0 ] && BASELINE="CLAUDE.md ✅"
+        [ "$HAS_CROSS" -gt 0 ] && BASELINE="${BASELINE} · Cross-domain invariants ✅"
+        [ -z "$BASELINE" ] && BASELINE="⚠️ No baseline docs found"
+
+        if [ "$DOMAIN_COUNT" -eq 0 ]; then
+          DOMAIN_SECTION="⚠️ **No domains detected** — only baseline context was loaded. Review may lack domain-specific invariants and testspecs."
+        else
+          DOMAIN_SECTION="$(printf "| Domain | Invariants | Architecture | Testspecs | Implspec |\n|---|---|---|---|---|\n%b" "$ROWS")"
+        fi
+
+        gh pr comment "$PR_NUMBER" --body "$(printf "📋 **Review context loaded** — %s lines · %s domain(s)\n\n%s\n\n> %s" "$LINE_COUNT" "$DOMAIN_COUNT" "$DOMAIN_SECTION" "$BASELINE")"
+
     # ── Full review (first-time) ─────────────────────────────────────────────
     - name: Run full review
       if: |
