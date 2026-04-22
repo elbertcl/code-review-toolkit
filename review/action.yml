@@ -171,10 +171,10 @@ runs:
         ROWS=""
         while IFS= read -r domain; do
           [ -z "$domain" ] && continue
-          INV=$(awk "/^## Domain: ${domain}$/,/^## /" review_context.md | grep -c "^### Invariants" || true)
-          ARCH=$(awk "/^## Domain: ${domain}$/,/^## /" review_context.md | grep -c "^### Architecture" || true)
-          SPEC=$(awk "/^## Domain: ${domain}$/,/^## /" review_context.md | grep -c "^### Testspecs" || true)
-          IMPL=$(awk "/^## Domain: ${domain}$/,/^## /" review_context.md | grep -c "^### Active Implspec" || true)
+          INV=$(awk "/^## Domain: ${domain}$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Invariants" || true)
+          ARCH=$(awk "/^## Domain: ${domain}$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Architecture" || true)
+          SPEC=$(awk "/^## Domain: ${domain}$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Testspecs" || true)
+          IMPL=$(awk "/^## Domain: ${domain}$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Active Implspec" || true)
           ROWS="${ROWS}| \`${domain}\` | $([ "$INV" -gt 0 ] && echo "✅" || echo "—") | $([ "$ARCH" -gt 0 ] && echo "✅" || echo "—") | $([ "$SPEC" -gt 0 ] && echo "✅" || echo "—") | $([ "$IMPL" -gt 0 ] && echo "✅" || echo "—") |\n"
         done <<< "$DOMAINS"
 
