@@ -44,51 +44,37 @@ runs:
             return;
           }
 
+          // Detect mode: search for prior "PR Verdict:" comments from claude[bot].
+          // A verdict comment is the definitive signal that a full review cycle completed.
+          const { data: comments } = await github.rest.issues.listComments({
+            owner, repo, issue_number: prNum, per_page: 100
+          });
+          const priorVerdicts = comments.filter(c =>
+            c.user.login === 'claude[bot]' && c.body.includes('PR Verdict:')
+          );
+          const mode = priorVerdicts.length === 0 ? 'review' : 're-review';
+          core.info(`==> Mode: ${mode} (${priorVerdicts.length} prior verdict(s))`);
+
           await github.rest.reactions.createForIssueComment({
             owner, repo, comment_id: commentId, content: 'eyes'
           });
 
+          const emoji = mode === 'review' ? '🔍' : '🔄';
+          const label = mode === 'review' ? 'AI review started' : 'AI re-review started';
           await github.rest.issues.createComment({
             owner, repo, issue_number: prNum,
-            body: `🔍 **AI review started** for commit \`${pr.head.sha.slice(0, 7)}\`. [View workflow run](${runUrl})`
+            body: `${emoji} **${label}** for commit \`${pr.head.sha.slice(0, 7)}\`. [View workflow run](${runUrl})`
           });
 
           core.setOutput('skip',     'false');
           core.setOutput('head_sha', pr.head.sha);
           core.setOutput('pr_url',   pr.html_url);
-
-    # ── Mode detection ──────────────────────────────────────────────────────
-    # No prior verdict comment → full review
-    # Prior verdict exists     → re-review (scoped diff + thread classification)
-    # Detection searches for "PR Verdict:" in issue comments — a definitive
-    # signal that a complete review cycle finished.
-    - name: Detect review mode
-      id: mode
-      if: steps.pr-info.outputs.skip == 'false'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        REVIEWER_LOGIN="claude[bot]"
-        PR_NUMBER="${{ github.event.issue.number }}"
-        REPO="${{ github.repository }}"
-
-        PRIOR=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-          --paginate \
-          --jq "[.[] | select(.user.login == \"${REVIEWER_LOGIN}\" and (.body | contains(\"PR Verdict:\")))] | length")
-
-        if [ "${PRIOR}" -eq "0" ]; then
-          echo "mode=review" >> $GITHUB_OUTPUT
-          echo "==> Mode: first-time review"
-        else
-          echo "mode=re-review" >> $GITHUB_OUTPUT
-          echo "==> Mode: re-review (${PRIOR} prior comment(s) found)"
-        fi
+          core.setOutput('mode',     mode);
 
     # ── Re-review: verify commenter is PR author or trusted member ──────────
     - name: Re-review security check
       id: security
-      if: steps.pr-info.outputs.skip == 'false' && steps.mode.outputs.mode == 're-review'
+      if: steps.pr-info.outputs.skip == 'false' && steps.pr-info.outputs.mode == 're-review'
       uses: actions/github-script@v7
       with:
         github-token: ${{ github.token }}
@@ -112,7 +98,7 @@ runs:
     # ── Review mode: guard against reviewing the same commit twice ──────────
     - name: Loop guard
       id: loop_guard
-      if: steps.pr-info.outputs.skip == 'false' && steps.mode.outputs.mode == 'review'
+      if: steps.pr-info.outputs.skip == 'false' && steps.pr-info.outputs.mode == 'review'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -195,7 +181,7 @@ runs:
     - name: Run full review
       if: |
         steps.pr-info.outputs.skip == 'false' &&
-        steps.mode.outputs.mode == 'review' &&
+        steps.pr-info.outputs.mode == 'review' &&
         steps.loop_guard.outputs.skip != 'true'
       uses: anthropics/claude-code-action@v1
       env:
@@ -219,7 +205,7 @@ runs:
     - name: Run re-review
       if: |
         steps.pr-info.outputs.skip == 'false' &&
-        steps.mode.outputs.mode == 're-review' &&
+        steps.pr-info.outputs.mode == 're-review' &&
         steps.security.outputs.skip != 'true'
       uses: anthropics/claude-code-action@v1
       env:
