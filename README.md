@@ -62,6 +62,32 @@ Repo-specific review rules. Section 1 (Business Correctness) varies per repo; Se
 
 `scripts/prepare-review-context.sh` discovers domain names at runtime by scanning the consuming repo's own `docs/` structure (`docs/invariants/*.md`, `docs/architecture/*.md`, `docs/testspecs/*/`). No config required — adding a domain doc is all it takes.
 
+## OpenCode Review With Team Token Routing
+
+Use `opencode-review` when one API token should be shared by a GitHub team instead of one token per team member.
+
+```yaml
+- uses: elbertcl/code-review-toolkit/opencode-review@v1
+  with:
+    org: astronautsid
+    team_token_map: |
+      ads=${{ secrets.OPENCODE_API_KEY_ADS }}
+    model: deepseek/deepseek-v4-pro
+    variant: max
+    mentions: /review
+    share: false
+```
+
+`team_token_map` is evaluated in order. The first configured team containing the PR comment author selects the OpenCode API token.
+
+Use `org` to control which GitHub organization is checked for team membership. If team membership is private, pass `team_lookup_token` with permission to read org team membership:
+
+```yaml
+team_lookup_token: ${{ secrets.REVIEW_TEAM_LOOKUP_TOKEN }}
+```
+
+Keep repo-specific review policy in the consuming repo, for example `docs/review-dimensions.md`, `AGENTS.md`, and `.github/instructions/review-depth.instructions.md`.
+
 ## Versioning
 
 Pin to a tag (`@v1`, `@v1.0.0`) for stability. The tag covers both the action logic and the bundled skills/scripts.
