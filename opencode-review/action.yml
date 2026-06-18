@@ -29,6 +29,14 @@ inputs:
     description: Whether OpenCode sharing is enabled.
     required: false
     default: "false"
+  use_github_token:
+    description: Use GitHub Actions GITHUB_TOKEN instead of OpenCode GitHub App token exchange.
+    required: false
+    default: "false"
+  github_token:
+    description: GitHub token passed to OpenCode when use_github_token is true.
+    required: false
+    default: ${{ github.token }}
   extra_prompt:
     description: Extra consuming-repo review instructions.
     required: false
@@ -108,11 +116,13 @@ runs:
       uses: anomalyco/opencode/github@latest
       env:
         OPENCODE_API_KEY: ${{ steps.team-token.outputs.opencode_api_key }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
       with:
         model: ${{ inputs.model }}
         variant: ${{ inputs.variant }}
         mentions: ${{ inputs.mentions }}
         share: ${{ inputs.share }}
+        use_github_token: ${{ inputs.use_github_token }}
         prompt: |
           Review this pull request only. Do not edit files, commit, push, or create branches.
 
