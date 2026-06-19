@@ -31,6 +31,10 @@ export function selectDirectToken(value) {
   return String(value ?? "").trim();
 }
 
+export function selectFirstTeamToken(entries) {
+  return entries[0] ?? null;
+}
+
 async function github(path, options = {}) {
   return fetch(`https://api.github.com${path}`, {
     ...options,
@@ -120,17 +124,10 @@ async function main() {
     await fail(validationError);
   }
 
-  for (const entry of entries) {
-    if (await isTeamMember(entry.team)) {
-      fs.appendFileSync(outputPath, `selected_team=${entry.team}\n`);
-      fs.appendFileSync(outputPath, `opencode_api_key=${entry.apiKey}\n`);
-      process.exit(0);
-    }
-  }
-
-  await fail(
-    `**OpenCode review skipped:** \`${username}\` is not a member of any configured review team for org \`${org}\`.`
-  );
+  const entry = selectFirstTeamToken(entries);
+  fs.appendFileSync(outputPath, `selected_team=${entry.team}\n`);
+  fs.appendFileSync(outputPath, `opencode_api_key=${entry.apiKey}\n`);
+  process.exit(0);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

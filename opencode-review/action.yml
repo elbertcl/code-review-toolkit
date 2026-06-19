@@ -37,7 +37,7 @@ inputs:
   use_github_token:
     description: Use GitHub Actions GITHUB_TOKEN instead of OpenCode GitHub App token exchange.
     required: false
-    default: "true"
+    default: "false"
   github_token:
     description: GitHub token passed to OpenCode when use_github_token is true.
     required: false
