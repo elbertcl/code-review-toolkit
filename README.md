@@ -66,8 +66,6 @@ Repo-specific review rules. Section 1 (Business Correctness) varies per repo; Se
 
 Use `opencode-review` when you want OpenCode to review PRs from a `/review` comment. The consuming repo only needs the trigger workflow; review behavior, context preparation, inline comments, and the summary contract live in this toolkit.
 
-### Single shared token
-
 ```yaml
 name: OpenCode PR Review
 
@@ -99,33 +97,6 @@ jobs:
 ```
 
 Keep repo-specific review policy in the consuming repo, for example `AGENTS.md`, `docs/review-dimensions.md`, or `.github/instructions/review-depth.instructions.md`.
-
-### Team token routing
-
-Use `opencode-review` when one API token should be shared by a GitHub team instead of one token per team member.
-
-```yaml
-- uses: elbertcl/code-review-toolkit/opencode-review@v1
-  with:
-    org: astronautsid
-    team_token_map: |
-      ads=${{ secrets.OPENCODE_API_KEY_ADS }}
-    model: opencode-go/deepseek-v4-pro
-    variant: max
-    mentions: /review
-    share: false
-    use_github_token: true
-```
-
-`team_token_map` is evaluated in order. The first configured team containing the PR comment author selects the OpenCode API token.
-
-Use `org` to control which GitHub organization is checked for team membership. If team membership is private, pass `team_lookup_token` with permission to read org team membership:
-
-```yaml
-team_lookup_token: ${{ secrets.REVIEW_TEAM_LOOKUP_TOKEN }}
-```
-
-Use direct `opencode_api_key` for one shared token. Use `team_token_map` when different GitHub teams should route to different OpenCode API tokens.
 
 ## Versioning
 
