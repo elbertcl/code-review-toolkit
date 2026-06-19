@@ -1,23 +1,11 @@
 name: OpenCode PR Review
-description: OpenCode PR review with optional org team token routing.
+description: OpenCode PR review.
 
 inputs:
   opencode_api_key:
-    description: OpenCode API key. Use this for a single shared token; omit when using team_token_map.
+    description: OpenCode API key.
     required: false
     default: ""
-  org:
-    description: GitHub org used for team membership lookup.
-    required: false
-    default: ${{ github.repository_owner }}
-  team_token_map:
-    description: Multiline team-to-token map, one entry per line as team_slug=secret_value.
-    required: false
-    default: ""
-  team_lookup_token:
-    description: GitHub token used to read org team membership.
-    required: false
-    default: ${{ github.token }}
   model:
     description: OpenCode model.
     required: false
@@ -97,28 +85,6 @@ runs:
           core.setOutput('head_sha', pr.head.sha);
           core.setOutput('pr_url', pr.html_url);
 
-    - name: Select direct token
-      id: direct-token
-      if: steps.pr-info.outputs.skip != 'true' && inputs.opencode_api_key != ''
-      shell: bash
-      env:
-        OPENCODE_API_KEY: ${{ inputs.opencode_api_key }}
-      run: |
-        printf 'opencode_api_key=%s\n' "${OPENCODE_API_KEY}" >> "${GITHUB_OUTPUT}"
-
-    - name: Resolve team token
-      id: team-token
-      if: steps.pr-info.outputs.skip != 'true' && inputs.opencode_api_key == ''
-      shell: bash
-      env:
-        GITHUB_TOKEN: ${{ inputs.team_lookup_token }}
-        TEAM_TOKEN_MAP: ${{ inputs.team_token_map }}
-        TEAM_LOOKUP_ORG: ${{ inputs.org }}
-        COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
-        PR_NUMBER: ${{ github.event.issue.number }}
-      run: node "${{ github.action_path }}/../scripts/resolve-team-token.mjs"
-
     - name: Prepare review context
       if: steps.pr-info.outputs.skip != 'true'
       shell: bash
@@ -133,7 +99,7 @@ runs:
       if: steps.pr-info.outputs.skip != 'true'
       uses: anomalyco/opencode/github@v1.17.6
       env:
-        OPENCODE_API_KEY: ${{ steps.direct-token.outputs.opencode_api_key || steps.team-token.outputs.opencode_api_key }}
+        OPENCODE_API_KEY: ${{ inputs.opencode_api_key }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
       with:
         model: ${{ inputs.model }}
