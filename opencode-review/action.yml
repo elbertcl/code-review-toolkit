@@ -1,14 +1,19 @@
 name: OpenCode PR Review
-description: OpenCode PR review with org team token routing.
+description: OpenCode PR review with optional org team token routing.
 
 inputs:
+  opencode_api_key:
+    description: OpenCode API key. Use this for a single shared token; omit when using team_token_map.
+    required: false
+    default: ""
   org:
     description: GitHub org used for team membership lookup.
     required: false
     default: ${{ github.repository_owner }}
   team_token_map:
     description: Multiline team-to-token map, one entry per line as team_slug=secret_value.
-    required: true
+    required: false
+    default: ""
   team_lookup_token:
     description: GitHub token used to read org team membership.
     required: false
@@ -16,7 +21,7 @@ inputs:
   model:
     description: OpenCode model.
     required: false
-    default: deepseek/deepseek-v4-pro
+    default: opencode-go/deepseek-v4-pro
   variant:
     description: OpenCode variant.
     required: false
@@ -53,18 +58,22 @@ runs:
         script: |
           const owner = context.repo.owner;
           const repo = context.repo.repo;
-          const prNum = context.payload.issue.number;
+          const issueNumber = context.payload.issue.number;
           const commentId = context.payload.comment.id;
           const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
 
-          const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNum });
+          const { data: pr } = await github.rest.pulls.get({
+            owner,
+            repo,
+            pull_number: issueNumber
+          });
 
           if (pr.draft) {
             await github.rest.issues.createComment({
               owner,
               repo,
-              issue_number: prNum,
-              body: `**OpenCode review skipped:** PR is still a draft.`
+              issue_number: issueNumber,
+              body: '**OpenCode review skipped:** PR is still a draft.'
             });
             core.setOutput('skip', 'true');
             return;
@@ -80,7 +89,7 @@ runs:
           await github.rest.issues.createComment({
             owner,
             repo,
-            issue_number: prNum,
+            issue_number: issueNumber,
             body: `**OpenCode review started** for commit \`${pr.head.sha.slice(0, 7)}\`. [View workflow run](${runUrl})`
           });
 
@@ -88,9 +97,18 @@ runs:
           core.setOutput('head_sha', pr.head.sha);
           core.setOutput('pr_url', pr.html_url);
 
+    - name: Select direct token
+      id: direct-token
+      if: steps.pr-info.outputs.skip != 'true' && inputs.opencode_api_key != ''
+      shell: bash
+      env:
+        OPENCODE_API_KEY: ${{ inputs.opencode_api_key }}
+      run: |
+        printf 'opencode_api_key=%s\n' "${OPENCODE_API_KEY}" >> "${GITHUB_OUTPUT}"
+
     - name: Resolve team token
       id: team-token
-      if: steps.pr-info.outputs.skip != 'true'
+      if: steps.pr-info.outputs.skip != 'true' && inputs.opencode_api_key == ''
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.team_lookup_token }}
@@ -113,9 +131,9 @@ runs:
 
     - name: Run OpenCode review
       if: steps.pr-info.outputs.skip != 'true'
-      uses: anomalyco/opencode/github@latest
+      uses: anomalyco/opencode/github@v1.17.6
       env:
-        OPENCODE_API_KEY: ${{ steps.team-token.outputs.opencode_api_key }}
+        OPENCODE_API_KEY: ${{ steps.direct-token.outputs.opencode_api_key || steps.team-token.outputs.opencode_api_key }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
       with:
         model: ${{ inputs.model }}
@@ -127,53 +145,118 @@ runs:
           Review this pull request only. Do not edit files, commit, push, or create branches.
 
           Required context:
+          - The PR URL is ${{ steps.pr-info.outputs.pr_url }}.
           - Read review_context.md first if present.
-          - Read docs/review-dimensions.md if present.
           - Read AGENTS.md if present.
-          - Read .github/copilot-instructions.md if present.
-          - Read .github/instructions/review-depth.instructions.md if present.
+          - Use the GitHub API or available PR context to inspect the PR diff.
 
           Review priorities:
-          - correctness and invariant violations
-          - financial safety and audit trail completeness
-          - subscriber Ack/Nack correctness
-          - transaction safety
-          - wrong-layer imports and cross-domain boundary violations
-          - context, logging, metrics, and DB context usage
-          - performance risks such as N+1 queries or unbounded scans
-          - maintainability issues that meet configured severity rules
+          - Correctness bugs and behavior regressions.
+          - Missing or incorrect error handling.
+          - Missing tests for changed behavior.
+          - Maintainability issues that are specific, actionable, and worth blocking or discussing.
 
           Finding format requirements:
           - Every finding must use one of these severities: CRITICAL, HIGH, MEDIUM, LOW.
           - Every finding must include a concrete file path and line number from the PR diff.
           - Do not report findings without a line number.
-          - Do not report generated files, protobuf output, mocks, or migrations.
-          - Prefer no findings over speculative findings.
+          - Do not report generated files, mocks, or files under mocks/.
 
-          Include this machine-readable block in the final response exactly once:
+          ---
+          Review workflow — execute steps in order:
+
+          Step 1: For EVERY finding, post an inline review comment on the exact file and line using:
+            gh api "repos/${{ github.repository }}/pulls/${{ github.event.issue.number }}/comments" \
+              -f body="[SEVERITY] <title>
+
+          <body>
+
+          Suggested fix: <suggested_fix>" \
+              -f commit_id="${{ steps.pr-info.outputs.head_sha }}" \
+              -f path="<file>" \
+              -f line=<line>
+
+            Capture the html_url from each response (e.g. .../pull/N#discussion_rNNN). You will use these links in the summary.
+
+            If there are no findings, skip Step 1.
+
+          Step 2: Return the summary below as your final response using this EXACT structure.
+            Do not create an issue comment or PR comment for the summary with `gh api`, `gh pr comment`, or any other GitHub API call.
+            The GitHub Action will publish your final response as the single PR summary comment.
+
+          ## PR Verdict: <Verdict icon> <NEEDS FIX|NEEDS DISCUSSION|SAFE TO MERGE>
+
+          > **Blocking:** <"N blocking findings must be fixed before merge." when CRITICAL or HIGH exist, otherwise "No blocking findings.">
+          > **Reviewed commit:** `${{ steps.pr-info.outputs.head_sha }}`
+
+          ### Must Fix Before Merge
+          <Each CRITICAL or HIGH finding: use the link captured from Step 1. If none, write "None.">
+          - [SEVERITY] <title> — [`path/file.go:line`](<inline comment html_url>)
+
+          ### Non-Blocking Findings
+          <Each MEDIUM or LOW finding: use the link captured from Step 1. If none, write "None.">
+          - [SEVERITY] <title> — [`path/file.go:line`](<inline comment html_url>)
+
+          ### Progress
+          - <N> blocking finding(s) (CRITICAL/HIGH)
+          - <N> non-blocking finding(s) (MEDIUM/LOW)
+          - Review scoped to changed files only
+
+          ### Next Action
+          - **On GitHub:** Comment `/autofix` to auto-fix blocking findings, or `/autofix SEVERITY,...` for specific severities.
+          - **Local:** Fix the listed findings manually, then push updates to this PR.
 
           <!-- opencode-pr-review -->
-          <!-- findings-json-start -->
+          <!-- reviewed-head: ${{ steps.pr-info.outputs.head_sha }} -->
+          <!-- findings-json-start
           [
             {
               "severity": "HIGH",
-              "path": "internal/domain/example/service/example.go",
+              "path": "example/example.go",
               "line": 42,
               "title": "Short finding title",
               "body": "Why this is a problem and what breaks downstream.",
               "suggested_fix": "Concrete fix intent."
             }
           ]
-          <!-- findings-json-end -->
+          findings-json-end -->
 
-          If there are no findings, output an empty JSON array between the markers.
+          Verdict rules:
+          - NEEDS FIX: any CRITICAL or HIGH finding. Use :red_circle: icon.
+          - NEEDS DISCUSSION: only when the main blocker depends on a human product or architecture decision. Use :yellow_circle: icon.
+          - SAFE TO MERGE: no findings or only MEDIUM/LOW non-blocking findings. Use :green_circle: icon.
+          - If there are no findings, output an empty JSON array `[]` between the markers and set verdict to SAFE TO MERGE.
 
-          After the JSON block, include a concise human-readable review summary and a final verdict:
-          - Fix Required: any CRITICAL or HIGH finding
-          - Needs Discussion: only when a finding depends on a human product or architecture decision
-          - Safe to Merge: no findings or LOW-only findings
+          Repository rules:
+          - Follow AGENTS.md.
+          - Prefer clarity over cleverness.
+          - Check for proper error wrapping.
+          - Verify test coverage.
 
           ${{ inputs.extra_prompt }}
+
+    - name: Verify review comment is posted
+      id: review-comment-id
+      if: steps.pr-info.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.issue.number }}
+        HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
+      run: |
+        for i in $(seq 6); do
+          comment_id=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq "map(select(.body | contains(\"${HEAD_SHA}\") and contains(\"/actions/runs/${{ github.run_id }}\"))) | sort_by(.created_at) | last | .id // empty")
+          if [ -n "${comment_id}" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/${comment_id}" \
+              --jq '.body' | \
+              sed 's/\[github run\]/[View workflow run]/' | \
+              jq -Rs '{body: .}' | \
+              gh api "repos/${{ github.repository }}/issues/comments/${comment_id}" --method PATCH --input -
+            break
+          fi
+          sleep 5
+        done
 
     - name: Post failure comment
       if: failure()
@@ -183,4 +266,4 @@ runs:
       run: |
         gh pr comment "${{ github.event.issue.number }}" \
           --repo "${{ github.repository }}" \
-          --body "**OpenCode review failed unexpectedly.** Check the workflow run for details."
+          --body "**OpenCode review failed unexpectedly.** Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
