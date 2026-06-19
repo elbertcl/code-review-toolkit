@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 
 const token = process.env.GITHUB_TOKEN;
 const teamTokenMap = process.env.TEAM_TOKEN_MAP ?? "";
@@ -8,7 +9,7 @@ const repository = process.env.GITHUB_REPOSITORY;
 const prNumber = process.env.PR_NUMBER;
 const outputPath = process.env.GITHUB_OUTPUT;
 
-function parseMap(value) {
+export function parseMap(value) {
   return value
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -24,6 +25,10 @@ function parseMap(value) {
         apiKey: line.slice(separator + 1).trim(),
       };
     });
+}
+
+export function selectDirectToken(value) {
+  return String(value ?? "").trim();
 }
 
 async function github(path, options = {}) {
@@ -102,26 +107,32 @@ function validateInput(entries) {
   return "";
 }
 
-let entries;
-try {
-  entries = parseMap(teamTokenMap);
-} catch (error) {
-  await fail(`**OpenCode review failed:** ${error.message}`);
-}
-
-const validationError = validateInput(entries);
-if (validationError) {
-  await fail(validationError);
-}
-
-for (const entry of entries) {
-  if (await isTeamMember(entry.team)) {
-    fs.appendFileSync(outputPath, `selected_team=${entry.team}\n`);
-    fs.appendFileSync(outputPath, `opencode_api_key=${entry.apiKey}\n`);
-    process.exit(0);
+async function main() {
+  let entries;
+  try {
+    entries = parseMap(teamTokenMap);
+  } catch (error) {
+    await fail(`**OpenCode review failed:** ${error.message}`);
   }
+
+  const validationError = validateInput(entries);
+  if (validationError) {
+    await fail(validationError);
+  }
+
+  for (const entry of entries) {
+    if (await isTeamMember(entry.team)) {
+      fs.appendFileSync(outputPath, `selected_team=${entry.team}\n`);
+      fs.appendFileSync(outputPath, `opencode_api_key=${entry.apiKey}\n`);
+      process.exit(0);
+    }
+  }
+
+  await fail(
+    `**OpenCode review skipped:** \`${username}\` is not a member of any configured review team for org \`${org}\`.`
+  );
 }
 
-await fail(
-  `**OpenCode review skipped:** \`${username}\` is not a member of any configured review team for org \`${org}\`.`
-);
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}
