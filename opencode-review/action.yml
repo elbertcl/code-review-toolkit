@@ -254,16 +254,35 @@ runs:
       run: |
         PR_NUMBER="${{ github.event.issue.number }}"
         LINE_COUNT=$(wc -l < review_context.md | tr -d ' ')
-        FILE_COUNT=$(grep -c '^- \`' review_context.md || echo 0)
 
-        HAS_RULES=$(grep -c "^_No AGENTS.md or CLAUDE.md found._" review_context.md || true)
-        if [ "$HAS_RULES" -gt 0 ]; then
-          RULES_STATUS="⚠️ No AGENTS.md or CLAUDE.md found"
+        DOMAINS=$(grep "^## Domain:" review_context.md | sed 's/^## Domain: //' || true)
+        DOMAIN_COUNT=$(echo "$DOMAINS" | grep -c '[^[:space:]]' || echo 0)
+
+        HAS_RULES=$(grep -cE "^## (AGENTS|CLAUDE)\.md" review_context.md || true)
+        HAS_CROSS=$(grep -c "^## Cross-domain invariants" review_context.md || true)
+
+        ROWS=""
+        while IFS= read -r domain; do
+          [ -z "$domain" ] && continue
+          INV=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Invariants" || true)
+          ARCH=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Architecture" || true)
+          SPEC=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Testspecs" || true)
+          IMPL=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Active Implspec" || true)
+          ROWS="${ROWS}| \`${domain}\` | $([ "$INV" -gt 0 ] && echo "✅" || echo "—") | $([ "$ARCH" -gt 0 ] && echo "✅" || echo "—") | $([ "$SPEC" -gt 0 ] && echo "✅" || echo "—") | $([ "$IMPL" -gt 0 ] && echo "✅" || echo "—") |\n"
+        done <<< "$DOMAINS"
+
+        BASELINE=""
+        [ "$HAS_RULES" -gt 0 ] && BASELINE="Repository rules ✅"
+        [ "$HAS_CROSS" -gt 0 ] && BASELINE="${BASELINE} · Cross-domain invariants ✅"
+        [ -z "$BASELINE" ] && BASELINE="⚠️ No baseline docs found"
+
+        if [ "$DOMAIN_COUNT" -eq 0 ]; then
+          DOMAIN_SECTION="⚠️ **No domains detected** — only baseline context was loaded. Review may lack domain-specific invariants and testspecs."
         else
-          RULES_STATUS="✅ Repository rules loaded"
+          DOMAIN_SECTION="$(printf "| Domain | Invariants | Architecture | Testspecs | Implspec |\n|---|---|---|---|---|\n%b" "$ROWS")"
         fi
 
-        gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Review context loaded** — %s lines · %s changed file(s)\n\n> %s' "$LINE_COUNT" "$FILE_COUNT" "$RULES_STATUS")"
+        gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Review context loaded** — %s lines · %s domain(s)\n\n%s\n\n> %s' "$LINE_COUNT" "$DOMAIN_COUNT" "$DOMAIN_SECTION" "$BASELINE")"
 
     # ── Full review (first-time) ─────────────────────────────────────────────
     - name: Run full review
