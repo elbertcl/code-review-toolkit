@@ -294,7 +294,6 @@ runs:
           After posting the PR Verdict comment (Phase 4), append the following markers and a structured JSON array of ALL findings. Use this EXACT format:
 
           <!-- opencode-pr-review -->
-          <!-- reviewed-head: ${{ steps.pr-info.outputs.head_sha }} -->
           <!-- findings-json-start
           [
             {
@@ -348,7 +347,7 @@ runs:
           FIRST: Read the file "${{ github.action_path }}/../skills/re-review-pr/SKILL.md" and follow all its instructions exactly, with these OpenCode-specific additions:
 
           ADDITION A — findings-json block in verdict:
-          After posting the final PR Verdict comment, append the same markers and structured JSON array as described in the full review prompt above (`<!-- opencode-pr-review -->`, `<!-- reviewed-head: ... -->`, `<!-- findings-json-start/end -->`). Include ALL new findings from Phase 5-6 in this JSON array.
+          After posting the final PR Verdict comment, append the same markers and structured JSON array as described in the full review prompt above (`<!-- opencode-pr-review -->`, `<!-- findings-json-start/end -->`). Include ALL new findings from Phase 5-6 in this JSON array.
 
           ADDITION B — verdict comment posting:
           The skill tells you to post the verdict with `gh pr comment`. Instead, return the verdict as your final response. Do NOT call `gh pr comment` for the verdict.
