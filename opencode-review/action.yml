@@ -284,6 +284,83 @@ runs:
 
         gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Review context loaded** — %s lines · %s domain(s)\n\n%s\n\n> %s' "$LINE_COUNT" "$DOMAIN_COUNT" "$DOMAIN_SECTION" "$BASELINE")"
 
+    # ── Prepare workspace-local OpenCode instruction files ───────────────────
+    - name: Prepare OpenCode instruction files
+      if: |
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      env:
+        EXTRA_PROMPT: ${{ inputs.extra_prompt }}
+      run: |
+        mkdir -p .opencode
+
+        cp "${{ github.action_path }}/../skills/review-pr/SKILL.md" .opencode/review-pr.base.md
+        cp "${{ github.action_path }}/../skills/re-review-pr/SKILL.md" .opencode/re-review-pr.base.md
+
+        cat > .opencode/review-pr.instructions.md <<'EOF'
+        OpenCode additions:
+        1. Return the final PR verdict as your final response. Do NOT call `gh pr comment` for the verdict; this Action posts it.
+        2. All inline comments must still be posted via GitHub API exactly as the base skill instructs.
+        3. Append this exact structured block to the final verdict:
+
+        <!-- opencode-pr-review -->
+        <!-- findings-json-start
+        [
+          {
+            "severity": "CRITICAL",
+            "path": "example/file.go",
+            "line": 42,
+            "title": "Short finding title",
+            "body": "Why this is a problem and what breaks downstream.",
+            "suggested_fix": "Concrete fix intent."
+          }
+        ]
+        findings-json-end -->
+
+        4. Every finding posted inline MUST appear in this JSON array. If there are no findings, emit `[]`.
+        5. Each finding MUST include `suggested_fix` with a concrete actionable fix in 1-2 sentences.
+        EOF
+
+        cat > .opencode/re-review-pr.instructions.md <<'EOF'
+        OpenCode additions:
+        1. Return the final PR verdict as your final response. Do NOT call `gh pr comment` for the verdict; this Action posts it.
+        2. Append this exact structured block to the final verdict:
+
+        <!-- opencode-pr-review -->
+        <!-- findings-json-start
+        [
+          {
+            "severity": "CRITICAL",
+            "path": "example/file.go",
+            "line": 42,
+            "title": "Short finding title",
+            "body": "Why this is a problem and what breaks downstream.",
+            "suggested_fix": "Concrete fix intent."
+          }
+        ]
+        findings-json-end -->
+
+        3. Include ALL new findings from re-review in this JSON array. If there are no findings, emit `[]`.
+        4. Each finding MUST include `suggested_fix`.
+        EOF
+
+        cat .opencode/review-pr.base.md .opencode/review-pr.instructions.md > .opencode/review-pr.opencode.md
+        cat .opencode/re-review-pr.base.md .opencode/re-review-pr.instructions.md > .opencode/re-review-pr.opencode.md
+
+        if [ -n "${EXTRA_PROMPT}" ]; then
+          {
+            printf '\n\n## Repository rules\n\n'
+            printf '%s\n' "${EXTRA_PROMPT}"
+          } >> .opencode/review-pr.opencode.md
+          {
+            printf '\n\n## Repository rules\n\n'
+            printf '%s\n' "${EXTRA_PROMPT}"
+          } >> .opencode/re-review-pr.opencode.md
+        fi
+
     # ── Full review (first-time) ─────────────────────────────────────────────
     - name: Run full review
       if: |
@@ -307,35 +384,7 @@ runs:
           REVIEWER_LOGIN is 'github-actions[bot]'.
           The PR URL is: ${{ steps.pr-info.outputs.pr_url }}
 
-          FIRST: Read the file "${{ github.action_path }}/../skills/review-pr/SKILL.md" and follow all its instructions exactly, with these OpenCode-specific additions:
-
-          ADDITION A — findings-json block:
-          After posting the PR Verdict comment (Phase 4), append the following markers and a structured JSON array of ALL findings. Use this EXACT format:
-
-          <!-- opencode-pr-review -->
-          <!-- findings-json-start
-          [
-            {
-              "severity": "CRITICAL",
-              "path": "example/file.go",
-              "line": 42,
-              "title": "Short finding title",
-              "body": "Why this is a problem and what breaks downstream.",
-              "suggested_fix": "Concrete fix intent."
-            }
-          ]
-          findings-json-end -->
-
-          Every finding you posted as an inline comment MUST appear in this JSON array. If there are no findings, output an empty array `[]`.
-
-          ADDITION B — verdict comment posting:
-          The skill's Phase 4 tells you to post the verdict with `gh pr comment`. Instead, return the verdict as your final response. Do NOT call `gh pr comment` for the verdict — this Action will publish your final response as the PR summary comment. All inline comments (Phase 3) must still be posted via `gh api` as described in the skill.
-
-          ADDITION C — suggested_fix field:
-          Each finding in the JSON array must include a `suggested_fix` field with a concrete, actionable fix in 1-2 sentences. This is used by the autofix workflow.
-
-          Repository rules:
-          ${{ inputs.extra_prompt }}
+          FIRST: Read the workspace-local file ".opencode/review-pr.opencode.md" and follow all its instructions exactly.
 
     # ── Re-review (subsequent /review after prior feedback) ─────────────────
     - name: Run re-review
@@ -363,19 +412,7 @@ runs:
           REVIEWER_LOGIN is 'github-actions[bot]'.
           The PR URL is: ${{ steps.pr-info.outputs.pr_url }}
 
-          FIRST: Read the file "${{ github.action_path }}/../skills/re-review-pr/SKILL.md" and follow all its instructions exactly, with these OpenCode-specific additions:
-
-          ADDITION A — findings-json block in verdict:
-          After posting the final PR Verdict comment, append the same markers and structured JSON array as described in the full review prompt above (`<!-- opencode-pr-review -->`, `<!-- findings-json-start/end -->`). Include ALL new findings from Phase 5-6 in this JSON array.
-
-          ADDITION B — verdict comment posting:
-          The skill tells you to post the verdict with `gh pr comment`. Instead, return the verdict as your final response. Do NOT call `gh pr comment` for the verdict.
-
-          ADDITION C — suggested_fix field:
-          Each finding in the JSON array must include a `suggested_fix` field.
-
-          Repository rules:
-          ${{ inputs.extra_prompt }}
+          FIRST: Read the workspace-local file ".opencode/re-review-pr.opencode.md" and follow all its instructions exactly.
 
     # ── Verify review comment is posted ─────────────────────────────────────
     - name: Verify review comment is posted

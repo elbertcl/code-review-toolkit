@@ -26,27 +26,31 @@ reject_in_file() {
 
 require_in_file "${action_file}" "anomalyco/opencode/github@v1.17.6"
 require_in_file "${action_file}" "default: opencode-go/deepseek-v4-pro"
+require_in_file "${action_file}" "Prepare OpenCode instruction files"
+require_in_file "${action_file}" ".opencode/review-pr.opencode.md"
+require_in_file "${action_file}" ".opencode/re-review-pr.opencode.md"
+require_in_file "${action_file}" 'cp "${{ github.action_path }}/../skills/review-pr/SKILL.md" .opencode/review-pr.base.md'
+require_in_file "${action_file}" 'cp "${{ github.action_path }}/../skills/re-review-pr/SKILL.md" .opencode/re-review-pr.base.md'
 require_in_file "${action_file}" "inline review comment"
-require_in_file "${action_file}" "## PR Verdict"
-require_in_file "${action_file}" "### Must Fix Before Merge"
-require_in_file "${action_file}" "### Non-Blocking Findings"
-require_in_file "${action_file}" "### Progress"
-require_in_file "${action_file}" "### Next Action"
+require_in_file "${action_file}" "OpenCode additions:"
+require_in_file "${action_file}" "Return the final PR verdict as your final response"
 require_in_file "${action_file}" "<!-- opencode-pr-review -->"
-require_in_file "${action_file}" "<!-- reviewed-head:"
 require_in_file "${action_file}" "<!-- findings-json-start"
 require_in_file "${action_file}" "findings-json-end -->"
-require_in_file "${action_file}" "Do not create an issue comment or PR comment for the summary"
+require_in_file "${action_file}" "## Repository rules"
 require_in_file "${action_file}" "Verify review comment is posted"
 require_in_file "${action_file}" "HEAD_SHA"
 require_in_file "${action_file}" "github run"
 require_in_file "${action_file}" "[View workflow run]"
+reject_in_file "${action_file}" 'FIRST: Read the file "${{ github.action_path }}/../skills/review-pr/SKILL.md"'
+reject_in_file "${action_file}" 'FIRST: Read the file "${{ github.action_path }}/../skills/re-review-pr/SKILL.md"'
 
 require_in_file "${context_script}" ".git/info/exclude"
 require_in_file "${context_script}" "AGENTS.md"
-require_in_file "${context_script}" "## Changed Files"
-reject_in_file "${context_script}" "docs/invariants"
-reject_in_file "${context_script}" "docs/architecture"
-reject_in_file "${context_script}" "docs/testspecs"
+require_in_file "${context_script}" "CLAUDE.md"
+require_in_file "${context_script}" "## Domain:"
+require_in_file "${context_script}" "docs/invariants"
+require_in_file "${context_script}" "docs/architecture"
+require_in_file "${context_script}" "docs/testspecs"
 
 printf 'OpenCode review action contract is satisfied.\n'
