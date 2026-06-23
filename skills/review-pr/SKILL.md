@@ -59,6 +59,25 @@ Analyse the full PR diff in one pass, completing each section fully before movin
 - Domain invariants and CLAUDE.md rules (from `review_context.md` or loaded in Baseline Context)
 - Testspecs (from `review_context.md` — used in Section 1 only)
 
+### Artifact-aware review mode
+
+Before applying standard code-review dimensions, classify the changed files from `gh pr view <PR_URL> --json files` or `gh pr diff <PR_URL> --name-only`:
+
+1. **Docs-only PR** — every changed file is documentation or prose (`*.md`, `docs/**`, `README*`, `CHANGELOG*`, `*.txt`).
+   - Skip application-code dimensions like N+1, transaction safety, godoc, and runtime performance.
+   - Review for: broken references/links, formatting consistency, deletion cleanup, cross-document alignment, SSOT drift, and completeness against any stated ticket/spec.
+
+2. **SKILL / agent-instruction / workflow / process-doc PR** — any changed file is a review artifact such as `**/SKILL.md`, `.github/workflows/*.yml`, `.github/actions/**`, `action.yml`, `AGENTS.md`, `CLAUDE.md`, `.github/instructions/**`, or review helper scripts/docs.
+   - For those files, skip application-code dimensions and apply these dimensions instead:
+     - **Scan command correctness:** Run every `rg`/`grep`/`find` command in the artifact against the target repo. If a command is supposed to find a real pattern but returns no matches, treat it as a functional bug.
+     - **API pattern matching:** Verify examples and regexes match the target repo's real API/call shape.
+     - **Coverage completeness:** Check whether the artifact covers the full intended risk surface instead of a narrow subset.
+     - **False-positive guardrails:** Check for explicit "do not flag" or scoping rules so the review system does not create noisy findings.
+     - **Edge-case handling:** Confirm the artifact says what happens on zero matches, alternate code patterns, generated files, or mixed diffs.
+     - **Actionability:** Instructions must be executable and specific enough for the agent to follow without guessing.
+
+3. **Mixed PR** — when a PR contains both code and review artifacts, apply artifact-aware dimensions to the artifact files and normal code-review dimensions to the application-code files.
+
 ## Phase 2 — Deduplication
 
 Apply dedup rules from `docs/review-dimensions.md`. Then assign severity per the severity table in that file.
@@ -144,9 +163,16 @@ gh api repos/{owner}/{repo}/pulls/{pr_number}/reviews \
 
 > **Retrievability:** Comments posted via the batch review API are returned by `GET /pulls/{pr}/comments` — identical to individually-posted comments. The `/re-review` skill can fetch and classify them without any changes.
 
-Use the **right-side** (new file) line number. If the finding is on a deleted line, use the nearest surviving line.
+**Pre-post validation is mandatory for every candidate inline finding before you add it to the `comments` array:**
 
-Every comment MUST have a specific line number — never omit `line` or post at the file level. For findings that span multiple lines (e.g. N+1 loops, missing batch calls, unbounded scans), anchor to the **first line of the problematic construct** — the loop opening, the function call, or the first statement of the pattern.
+1. **Verify file is in the PR diff.** If the file is absent from `GET /pulls/{pr}/files`, do not inline-comment it.
+2. **Verify the target line is actually addressable in a diff hunk.** Check the file's patch hunk(s) from `GET /pulls/{pr}/files` or an equivalent diff view. If the line falls outside all hunks, do not force an approximate anchor.
+3. **If either check fails, keep the finding out of `comments[]` and put it in the final verdict/summary comment instead** with an explicit `path:line` reference.
+4. **Validate the final JSON payload before POST** using `python3 -m json.tool /tmp/pr_review_payload.json > /dev/null`.
+
+Use the **right-side** (new file) line number only when the line is clearly inside a valid diff hunk.
+
+Every comment MUST have a specific line number — never omit `line` or post at the file level. For findings that span multiple lines (e.g. N+1 loops, missing batch calls, unbounded scans), anchor to the **first line of the problematic construct** — the loop opening, the function call, or the first statement of the pattern. If the problematic construct is deleted or no longer addressable in the diff, do **not** attach it to the nearest surviving line; move it to the final verdict/summary comment instead.
 
 Comment body format:
 ```
@@ -277,3 +303,6 @@ Post Critical findings first, then High, Medium, Low. Within each severity, orde
 | Posting comments without waiting for approval | Always present the findings table and wait for explicit human approval before any `gh api` or `gh pr comment` call — **unless the prompt specifies AUTOMATED MODE** |
 | Building JSON via `jq -n --argjson` with shell-variable comment bodies | Comment bodies contain backticks, double quotes, and newlines that break shell variable interpolation and corrupt the JSON (HTTP 400). Always write the full payload to a temp file with a quoted heredoc (`cat > /tmp/pr_review_payload.json << 'JSONEOF' ... JSONEOF`) and post with `--input /tmp/pr_review_payload.json` |
 | Making a test/dry-run API call with placeholder content before posting real findings | Never call `gh api .../reviews` or `gh pr review` with placeholder data (e.g. `[MEDIUM] test`). Build the complete JSON payload in the temp file first, inspect it locally with `cat /tmp/pr_review_payload.json`, then post once. A test call creates a real GitHub comment that cannot be automatically cleaned up. |
+| Posting an inline comment for a file that is not in the PR diff | Check `GET /pulls/{pr}/files` first. If the file is absent, keep the finding in the summary/verdict only. |
+| Forcing a nearby anchor when the exact line is outside all diff hunks | Do not guess. If the line is not addressable in the patch hunk, keep the finding out of `comments[]` and place it in the summary/verdict with `path:line`. |
+| Applying application-code checks to docs, SKILLs, workflows, or process docs | First classify the artifact type. Use docs/process review dimensions for those files instead of runtime code checks like N+1 or godoc. |
