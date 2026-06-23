@@ -241,6 +241,30 @@ runs:
           "${{ github.event.issue.number }}" \
           "${{ github.repository }}"
 
+    # ── Context summary comment ────────────────────────────────────────────
+    - name: Post context summary
+      if: |
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        PR_NUMBER="${{ github.event.issue.number }}"
+        LINE_COUNT=$(wc -l < review_context.md | tr -d ' ')
+        FILE_COUNT=$(grep -c '^- \`' review_context.md || echo 0)
+
+        HAS_RULES=$(grep -c "^_No AGENTS.md or CLAUDE.md found._" review_context.md || true)
+        if [ "$HAS_RULES" -gt 0 ]; then
+          RULES_STATUS="⚠️ No AGENTS.md or CLAUDE.md found"
+        else
+          RULES_STATUS="✅ Repository rules loaded"
+        fi
+
+        gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Review context loaded** — %s lines · %s changed file(s)\n\n> %s' "$LINE_COUNT" "$FILE_COUNT" "$RULES_STATUS")"
+
     # ── Full review (first-time) ─────────────────────────────────────────────
     - name: Run full review
       if: |
