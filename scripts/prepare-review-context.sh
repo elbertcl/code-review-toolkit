@@ -34,8 +34,12 @@ fi
     echo '```markdown'
     cat AGENTS.md
     echo '```'
+  elif [ -f CLAUDE.md ]; then
+    echo '```markdown'
+    cat CLAUDE.md
+    echo '```'
   else
-    echo "_No AGENTS.md found._"
+    echo "_No AGENTS.md or CLAUDE.md found._"
   fi
   echo
   echo "## Changed Files"
