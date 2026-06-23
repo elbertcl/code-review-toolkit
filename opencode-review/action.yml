@@ -256,7 +256,7 @@ runs:
         LINE_COUNT=$(wc -l < review_context.md | tr -d ' ')
 
         DOMAINS=$(grep "^## Domain:" review_context.md | sed 's/^## Domain: //' || true)
-        DOMAIN_COUNT=$(echo "$DOMAINS" | grep -c '[^[:space:]]' || echo 0)
+        DOMAIN_COUNT=$(echo "$DOMAINS" | grep -c '[^[:space:]]' || true)
 
         HAS_RULES=$(grep -cE "^## (AGENTS|CLAUDE)\.md" review_context.md || true)
         HAS_CROSS=$(grep -c "^## Cross-domain invariants" review_context.md || true)
