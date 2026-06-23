@@ -42,7 +42,7 @@ PR_NUMBER="${1:?Usage: prepare-review-context.sh <PR_NUMBER> <REPO>}"
 REPO="${2:?Usage: prepare-review-context.sh <PR_NUMBER> <REPO>}"
 
 OUT="review_context.md"
-SCRATCH_FILES=("${OUT}" "findings_scoped.json" "autofix_skipped.json")
+SCRATCH_FILES=("${OUT}" "findings_scoped.json" "autofix_skipped.json" ".opencode/")
 
 # ── Exclude scratch files from git tracking ──────────────────────────────────
 exclude_file=".git/info/exclude"

@@ -322,6 +322,7 @@ runs:
 
         4. Every finding posted inline MUST appear in this JSON array. If there are no findings, emit `[]`.
         5. Each finding MUST include `suggested_fix` with a concrete actionable fix in 1-2 sentences.
+        6. Comment-only mode: do not edit repository files, do not create patches, do not run formatters, and do not run any git write operations (`git add`, `git commit`, `git push`, `git checkout -b`, `git merge`, `git rebase`). Output must be PR comments only.
         EOF
 
         cat > .opencode/re-review-pr.instructions.md <<'EOF'
@@ -345,6 +346,7 @@ runs:
 
         3. Include ALL new findings from re-review in this JSON array. If there are no findings, emit `[]`.
         4. Each finding MUST include `suggested_fix`.
+        5. Comment-only mode: do not edit repository files, do not create patches, and do not run any git write operations (`git add`, `git commit`, `git push`, `git checkout -b`, `git merge`, `git rebase`). Output must be PR comments only.
         EOF
 
         cat .opencode/review-pr.base.md .opencode/review-pr.instructions.md > .opencode/review-pr.opencode.md
@@ -359,6 +361,26 @@ runs:
             printf '\n\n## Repository rules\n\n'
             printf '%s\n' "${EXTRA_PROMPT}"
           } >> .opencode/re-review-pr.opencode.md
+        fi
+
+    # ── Guard: review mode must stay comment-only / clean ────────────────────
+    - name: Ensure review workspace is clean before OpenCode runs
+      if: |
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "::error::Review workspace is dirty before OpenCode starts. Comment-only review mode forbids git writes."
+          git status --short
+          gh pr comment "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "**OpenCode review aborted:** workspace became dirty before review started. Comment-only review mode forbids git add/commit/push. Check scratch-file handling in the action."
+          exit 1
         fi
 
     # ── Full review (first-time) ─────────────────────────────────────────────

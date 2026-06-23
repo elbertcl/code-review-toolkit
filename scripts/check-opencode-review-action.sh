@@ -27,6 +27,9 @@ reject_in_file() {
 require_in_file "${action_file}" "anomalyco/opencode/github@v1.17.6"
 require_in_file "${action_file}" "default: opencode-go/deepseek-v4-pro"
 require_in_file "${action_file}" "Prepare OpenCode instruction files"
+require_in_file "${action_file}" "Ensure review workspace is clean before OpenCode runs"
+require_in_file "${action_file}" "Comment-only review mode forbids git writes"
+require_in_file "${action_file}" "Output must be PR comments only."
 require_in_file "${action_file}" ".opencode/review-pr.opencode.md"
 require_in_file "${action_file}" ".opencode/re-review-pr.opencode.md"
 require_in_file "${action_file}" 'cp "${{ github.action_path }}/../skills/review-pr/SKILL.md" .opencode/review-pr.base.md'
@@ -46,6 +49,7 @@ reject_in_file "${action_file}" 'FIRST: Read the file "${{ github.action_path }}
 reject_in_file "${action_file}" 'FIRST: Read the file "${{ github.action_path }}/../skills/re-review-pr/SKILL.md"'
 
 require_in_file "${context_script}" ".git/info/exclude"
+require_in_file "${context_script}" ".opencode/"
 require_in_file "${context_script}" "AGENTS.md"
 require_in_file "${context_script}" "CLAUDE.md"
 require_in_file "${context_script}" "## Domain:"
