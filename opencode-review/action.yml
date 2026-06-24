@@ -212,15 +212,23 @@ runs:
         PR_NUMBER="${{ github.event.issue.number }}"
         REPO="${{ github.repository }}"
 
-        # Check if github-actions[bot] already posted inline comments for this commit
-        EXISTING=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" \
+        # Check if a *complete* OpenCode review cycle already exists for this HEAD.
+        # A complete cycle is proven by a verdict comment containing both markers:
+        # <!-- opencode-pr-review -->
+        # <!-- reviewed-head: {full_sha} -->
+        #
+        # Do NOT use pull review comment commit_id here. GitHub can rebind inline
+        # comments to the current PR head after later pushes/merges, which causes
+        # false "already reviewed" skips even when this HEAD never received a full
+        # verdict. The verdict marker is the stable source of truth.
+        EXISTING=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
           --paginate \
-          --jq "[.[] | select(.user.login == \"github-actions[bot]\" and .commit_id == \"${HEAD_SHA}\" and (.body | test(\"^\\\\[(CRITICAL|HIGH|MEDIUM|LOW)\\\\]\")))] | length")
+          --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"<!-- opencode-pr-review -->\")) and (.body | contains(\"<!-- reviewed-head: ${HEAD_SHA} -->\")))] | length")
 
         if [ "${EXISTING}" -gt "0" ]; then
-          echo "Loop guard: already reviewed commit ${HEAD_SHA} — skipping"
+          echo "Loop guard: complete review already exists for commit ${HEAD_SHA} — skipping"
           gh pr comment "${PR_NUMBER}" \
-            --body "**OpenCode review skipped:** Commit \`${HEAD_SHA:0:7}\` was already reviewed. Push a new commit to trigger a re-review."
+            --body "**OpenCode review skipped:** Commit \`${HEAD_SHA:0:7}\` was already fully reviewed. Push a new commit to trigger a re-review."
           echo "skip=true" >> $GITHUB_OUTPUT
         else
           echo "skip=false" >> $GITHUB_OUTPUT
