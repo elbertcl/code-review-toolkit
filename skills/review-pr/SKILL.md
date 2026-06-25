@@ -134,12 +134,13 @@ gh pr view <PR_URL> --json headRefOid --jq '.headRefOid'
 
 Build a JSON payload with all findings and post in **one** `gh api` call using `POST /pulls/{pr}/reviews`. This minimizes turns and keeps conversation history short.
 
-**Always write the full payload to a temp file using a quoted heredoc (`<< 'JSONEOF'`), then post with `--input`.** Do NOT use `jq -n --argjson` with shell variables — comment bodies contain backticks, double-quoted strings, and newlines that corrupt JSON when interpolated through shell variables.
+**Always write the full payload to a workspace-local temp file using a quoted heredoc (`<< 'JSONEOF'`), then post with `--input`.** Do NOT use `jq -n --argjson` with shell variables — comment bodies contain backticks, double-quoted strings, and newlines that corrupt JSON when interpolated through shell variables. Avoid `/tmp` in GitHub Actions review runs because it can trigger non-interactive external-directory permission prompts.
 
 ```bash
-# Write the complete JSON payload to a temp file.
+# Write the complete JSON payload to a workspace-local temp file.
 # Use a QUOTED heredoc marker ('JSONEOF') so the shell does not expand $ inside the body.
-cat > /tmp/pr_review_payload.json << 'JSONEOF'
+mkdir -p .opencode/tmp
+cat > .opencode/tmp/pr_review_payload.json << 'JSONEOF'
 {
   "commit_id": "<headRefOid>",
   "event": "COMMENT",
@@ -156,7 +157,7 @@ JSONEOF
 
 gh api repos/{owner}/{repo}/pulls/{pr_number}/reviews \
   --method POST \
-  --input /tmp/pr_review_payload.json
+  --input .opencode/tmp/pr_review_payload.json
 ```
 
 > **Why batch?** Each individual `gh api` call is a separate agent turn added to the rolling conversation history. Posting 10 findings individually = 10 turns × growing history ≈ 50K extra input tokens. One batch call = 1 turn.
@@ -168,7 +169,7 @@ gh api repos/{owner}/{repo}/pulls/{pr_number}/reviews \
 1. **Verify file is in the PR diff.** If the file is absent from `GET /pulls/{pr}/files`, do not inline-comment it.
 2. **Verify the target line is actually addressable in a diff hunk.** Check the file's patch hunk(s) from `GET /pulls/{pr}/files` or an equivalent diff view. If the line falls outside all hunks, do not force an approximate anchor.
 3. **If either check fails, keep the finding out of `comments[]` and put it in the final verdict/summary comment instead** with an explicit `path:line` reference.
-4. **Validate the final JSON payload before POST** using `python3 -m json.tool /tmp/pr_review_payload.json > /dev/null`.
+4. **Validate the final JSON payload before POST** using `python3 -m json.tool .opencode/tmp/pr_review_payload.json > /dev/null`.
 
 Use the **right-side** (new file) line number only when the line is clearly inside a valid diff hunk.
 
@@ -301,8 +302,8 @@ Post Critical findings first, then High, Medium, Low. Within each severity, orde
 | Over-flagging single-use helpers as Low when they have meaningful complexity | Only flag truly trivial pass-throughs |
 | Using `--body "...\n..."` for multi-line comments | Bash never expands `\n` inside double-quoted strings — GitHub stores literal backslash-n and renders the body as one line. Always use a heredoc: `--body "$(cat <<'EOF' ... EOF)"` |
 | Posting comments without waiting for approval | Always present the findings table and wait for explicit human approval before any `gh api` or `gh pr comment` call — **unless the prompt specifies AUTOMATED MODE** |
-| Building JSON via `jq -n --argjson` with shell-variable comment bodies | Comment bodies contain backticks, double quotes, and newlines that break shell variable interpolation and corrupt the JSON (HTTP 400). Always write the full payload to a temp file with a quoted heredoc (`cat > /tmp/pr_review_payload.json << 'JSONEOF' ... JSONEOF`) and post with `--input /tmp/pr_review_payload.json` |
-| Making a test/dry-run API call with placeholder content before posting real findings | Never call `gh api .../reviews` or `gh pr review` with placeholder data (e.g. `[MEDIUM] test`). Build the complete JSON payload in the temp file first, inspect it locally with `cat /tmp/pr_review_payload.json`, then post once. A test call creates a real GitHub comment that cannot be automatically cleaned up. |
+| Building JSON via `jq -n --argjson` with shell-variable comment bodies | Comment bodies contain backticks, double quotes, and newlines that break shell variable interpolation and corrupt the JSON (HTTP 400). Always write the full payload to a workspace-local temp file with a quoted heredoc (`mkdir -p .opencode/tmp && cat > .opencode/tmp/pr_review_payload.json << 'JSONEOF' ... JSONEOF`) and post with `--input .opencode/tmp/pr_review_payload.json`. Avoid `/tmp` in GitHub Actions review runs because it can trigger non-interactive external-directory permission prompts. |
+| Making a test/dry-run API call with placeholder content before posting real findings | Never call `gh api .../reviews` or `gh pr review` with placeholder data (e.g. `[MEDIUM] test`). Build the complete JSON payload in the temp file first, inspect it locally with `cat .opencode/tmp/pr_review_payload.json`, then post once. A test call creates a real GitHub comment that cannot be automatically cleaned up. |
 | Posting an inline comment for a file that is not in the PR diff | Check `GET /pulls/{pr}/files` first. If the file is absent, keep the finding in the summary/verdict only. |
 | Forcing a nearby anchor when the exact line is outside all diff hunks | Do not guess. If the line is not addressable in the patch hunk, keep the finding out of `comments[]` and place it in the summary/verdict with `path:line`. |
 | Applying application-code checks to docs, SKILLs, workflows, or process docs | First classify the artifact type. Use docs/process review dimensions for those files instead of runtime code checks like N+1 or godoc. |

@@ -326,10 +326,11 @@ EOF
 
 **Step 8.3** — Batch all new findings in a single API call. Sort Critical → High → Medium → Low; alphabetically by file within each severity.
 
-**Always write the full payload to a temp file using a quoted heredoc (`<< 'JSONEOF'`), then post with `--input`.** Do NOT use `jq -n --argjson` with shell variables — comment bodies contain backticks, double-quoted strings, and newlines that corrupt JSON when interpolated through shell variables.
+**Always write the full payload to a workspace-local temp file using a quoted heredoc (`<< 'JSONEOF'`), then post with `--input`.** Do NOT use `jq -n --argjson` with shell variables — comment bodies contain backticks, double quotes, and newlines that corrupt JSON when interpolated through shell variables. Avoid `/tmp` in GitHub Actions review runs because it can trigger non-interactive external-directory permission prompts.
 
 ```bash
-cat > /tmp/pr_rereview_payload.json << 'JSONEOF'
+mkdir -p .opencode/tmp
+cat > .opencode/tmp/pr_rereview_payload.json << 'JSONEOF'
 {
   "commit_id": "<HEAD_SHA>",
   "event": "COMMENT",
@@ -343,7 +344,7 @@ JSONEOF
 
 gh api repos/{owner}/{repo}/pulls/{pr_number}/reviews \
   --method POST \
-  --input /tmp/pr_rereview_payload.json
+  --input .opencode/tmp/pr_rereview_payload.json
 ```
 
 > **Why batch?** Each individual `gh api` call is a separate turn adding to rolling history. One batch call = 1 turn regardless of finding count.
@@ -477,5 +478,5 @@ Replace `{HEAD_SHA}` with the full `HEAD_SHA` value from Phase 2.4. This marker 
 | Posting a generic "still applies" reply for STILL_OPEN / unaddressed threads | Always include the specific reason the new commits don't fix it and a suggested code block fix |
 | Accepting an author reply of "will fix later" as acknowledged without a linked issue | Only classify as STILL_OPEN / acknowledged when the author provides a concrete deferral target (issue/PR number) or a sound technical justification |
 | Using `--body "...\n..."` for multi-line comments | Bash never expands `\n` inside double-quoted strings — GitHub stores literal backslash-n and renders the body as one line. Always use a heredoc: `--body "$(cat <<'EOF' ... EOF)"` |
-| Building JSON via `jq -n --argjson` with shell-variable comment bodies | Comment bodies contain backticks, double quotes, and newlines that break shell variable interpolation and corrupt the JSON (HTTP 400). Always write the full payload to a temp file with a quoted heredoc (`cat > /tmp/pr_rereview_payload.json << 'JSONEOF' ... JSONEOF`) and post with `--input /tmp/pr_rereview_payload.json` |
-| Making a test/dry-run API call with placeholder content before posting real findings | Never call `gh api .../reviews` with placeholder data (e.g. `[MEDIUM] test`). Build the complete JSON payload in the temp file first, inspect it locally with `cat /tmp/pr_rereview_payload.json`, then post once. A test call creates a real GitHub comment that cannot be automatically cleaned up. |
+| Building JSON via `jq -n --argjson` with shell-variable comment bodies | Comment bodies contain backticks, double quotes, and newlines that break shell variable interpolation and corrupt the JSON (HTTP 400). Always write the full payload to a workspace-local temp file with a quoted heredoc (`mkdir -p .opencode/tmp && cat > .opencode/tmp/pr_rereview_payload.json << 'JSONEOF' ... JSONEOF`) and post with `--input .opencode/tmp/pr_rereview_payload.json`. Avoid `/tmp` in GitHub Actions review runs because it can trigger non-interactive external-directory permission prompts. |
+| Making a test/dry-run API call with placeholder content before posting real findings | Never call `gh api .../reviews` with placeholder data (e.g. `[MEDIUM] test`). Build the complete JSON payload in the temp file first, inspect it locally with `cat .opencode/tmp/pr_rereview_payload.json`, then post once. A test call creates a real GitHub comment that cannot be automatically cleaned up. |

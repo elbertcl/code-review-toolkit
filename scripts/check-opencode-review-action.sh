@@ -32,6 +32,9 @@ require_in_file "${action_file}" "Comment-only review mode forbids git writes"
 require_in_file "${action_file}" "Output must be PR comments only."
 require_in_file "${action_file}" ".opencode/review-pr.opencode.md"
 require_in_file "${action_file}" ".opencode/re-review-pr.opencode.md"
+require_in_file "${action_file}" ".opencode/tmp"
+require_in_file "${action_file}" 'Never read from or write to `/tmp`'
+require_in_file "${action_file}" 'TMPDIR: ${{ github.workspace }}/.opencode/tmp'
 require_in_file "${action_file}" 'cp "${{ github.action_path }}/../skills/review-pr/SKILL.md" .opencode/review-pr.base.md'
 require_in_file "${action_file}" 'cp "${{ github.action_path }}/../skills/re-review-pr/SKILL.md" .opencode/re-review-pr.base.md'
 require_in_file "${action_file}" "inline review comment"

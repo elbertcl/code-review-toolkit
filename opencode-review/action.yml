@@ -303,7 +303,7 @@ runs:
       env:
         EXTRA_PROMPT: ${{ inputs.extra_prompt }}
       run: |
-        mkdir -p .opencode
+        mkdir -p .opencode .opencode/tmp
 
         cp "${{ github.action_path }}/../skills/review-pr/SKILL.md" .opencode/review-pr.base.md
         cp "${{ github.action_path }}/../skills/re-review-pr/SKILL.md" .opencode/re-review-pr.base.md
@@ -331,6 +331,7 @@ runs:
         4. Every finding posted inline MUST appear in this JSON array. If there are no findings, emit `[]`.
         5. Each finding MUST include `suggested_fix` with a concrete actionable fix in 1-2 sentences.
         6. Comment-only mode: do not edit repository files, do not create patches, do not run formatters, and do not run any git write operations (`git add`, `git commit`, `git push`, `git checkout -b`, `git merge`, `git rebase`). Output must be PR comments only.
+        7. For any scratch files or temporary payloads, use workspace-local paths under `.opencode/tmp/`. Never read from or write to `/tmp` or any path outside the repository checkout.
         EOF
 
         cat > .opencode/re-review-pr.instructions.md <<'EOF'
@@ -355,6 +356,7 @@ runs:
         3. Include ALL new findings from re-review in this JSON array. If there are no findings, emit `[]`.
         4. Each finding MUST include `suggested_fix`.
         5. Comment-only mode: do not edit repository files, do not create patches, and do not run any git write operations (`git add`, `git commit`, `git push`, `git checkout -b`, `git merge`, `git rebase`). Output must be PR comments only.
+        6. For any scratch files or temporary payloads, use workspace-local paths under `.opencode/tmp/`. Never read from or write to `/tmp` or any path outside the repository checkout.
         EOF
 
         cat .opencode/review-pr.base.md .opencode/review-pr.instructions.md > .opencode/review-pr.opencode.md
@@ -401,6 +403,7 @@ runs:
       env:
         OPENCODE_API_KEY: ${{ inputs.opencode_api_key }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
+        TMPDIR: ${{ github.workspace }}/.opencode/tmp
       with:
         model: ${{ inputs.model }}
         variant: ${{ inputs.variant }}
@@ -428,6 +431,7 @@ runs:
       env:
         OPENCODE_API_KEY: ${{ inputs.opencode_api_key }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
+        TMPDIR: ${{ github.workspace }}/.opencode/tmp
       with:
         model: ${{ inputs.model }}
         variant: ${{ inputs.variant }}
