@@ -301,6 +301,45 @@ runs:
           done <<< "${EXTRA_PATHS}"
         fi
 
+    # ── Context summary comment (same format as opencode-review) ───────────
+    - name: Post context summary
+      if: steps.findings.outputs.should_run == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
+        LINE_COUNT=$(wc -l < review_context.md 2>/dev/null | tr -d ' ' || echo 0)
+
+        DOMAINS=$(grep "^## Domain:" review_context.md 2>/dev/null | sed 's/^## Domain: //' || true)
+        DOMAIN_COUNT=$(echo "$DOMAINS" | grep -c '[^[:space:]]' || true)
+
+        HAS_RULES=$(grep -cE "^## (AGENTS|CLAUDE)\.md" review_context.md 2>/dev/null || true)
+        HAS_CROSS=$(grep -c "^## Cross-domain invariants" review_context.md 2>/dev/null || true)
+
+        ROWS=""
+        while IFS= read -r domain; do
+          [ -z "$domain" ] && continue
+          INV=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Invariants" || true)
+          ARCH=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Architecture" || true)
+          SPEC=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Testspecs" || true)
+          IMPL=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Active Implspec" || true)
+          ROWS="${ROWS}| \`${domain}\` | $([ "$INV" -gt 0 ] && echo "✅" || echo "—") | $([ "$ARCH" -gt 0 ] && echo "✅" || echo "—") | $([ "$SPEC" -gt 0 ] && echo "✅" || echo "—") | $([ "$IMPL" -gt 0 ] && echo "✅" || echo "—") |\n"
+        done <<< "$DOMAINS"
+
+        BASELINE=""
+        [ "$HAS_RULES" -gt 0 ] && BASELINE="Repository rules ✅"
+        [ "$HAS_CROSS" -gt 0 ] && BASELINE="${BASELINE} · Cross-domain invariants ✅"
+        [ -z "$BASELINE" ] && BASELINE="⚠️ No baseline docs found"
+
+        if [ "$DOMAIN_COUNT" -eq 0 ]; then
+          DOMAIN_SECTION="⚠️ **No domains detected** — only baseline context was loaded. Autofix may lack domain-specific invariants and testspecs."
+        else
+          DOMAIN_SECTION="$(printf "| Domain | Invariants | Architecture | Testspecs | Implspec |\n|---|---|---|---|---|\n%b" "$ROWS")"
+        fi
+
+        gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Autofix context loaded** — %s lines · %s domain(s)\n\n%s\n\n> %s' "$LINE_COUNT" "$DOMAIN_COUNT" "$DOMAIN_SECTION" "$BASELINE")"
+
     # ── Private cross-repo Go module access (Gap C) ─────────────────────────
     - name: Configure private module access
       if: steps.findings.outputs.should_run == 'true'
