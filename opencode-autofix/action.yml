@@ -1,0 +1,487 @@
+name: OpenCode PR Autofix
+description: >-
+  Apply scoped PR-review autofixes via OpenCode. Reads findings from the latest
+  OpenCode review verdict (JSON block) plus inline review comments, fixes only
+  the selected severities, runs repo-defined verification gates, and guarantees
+  the PR branch never ends in a broken state.
+
+inputs:
+  opencode_api_key:
+    description: OpenCode API key.
+    required: false
+    default: ""
+  model:
+    description: OpenCode model.
+    required: false
+    default: opencode-go/deepseek-v4-pro
+  variant:
+    description: OpenCode variant.
+    required: false
+    default: max
+  use_github_token:
+    description: Use GitHub Actions GITHUB_TOKEN instead of OpenCode App token exchange.
+    required: false
+    default: "false"
+  github_token:
+    description: Token passed to OpenCode when use_github_token is true.
+    required: false
+    default: ${{ github.token }}
+  git_token:
+    description: >-
+      Token used for git operations and private cross-repo Go module access.
+      Override with a PAT when `verify_commands` builds against private
+      astronautsid/* modules; defaults to the repo-scoped GITHUB_TOKEN.
+    required: false
+    default: ${{ github.token }}
+  default_severities:
+    description: Severities applied when `/autofix` is sent with no argument.
+    required: false
+    default: CRITICAL,HIGH
+  excluded_paths:
+    description: >-
+      Newline-separated path patterns excluded from autofix. Supports `dir/`
+      (substring), `prefix/` at start, and `*.ext` suffix forms.
+    required: false
+    default: |
+      migrations/
+      script/migrations/
+      *.proto
+      *.pb.go
+      *_mock.go
+      mocks/
+  verify_commands:
+    description: >-
+      Newline-separated verification commands. Run BOTH as the post-fix gate and
+      quoted into the fixer's self-verify loop — single source of truth (Gap F).
+    required: false
+    default: |
+      make build
+  context_paths:
+    description: >-
+      Newline-separated extra doc files/globs appended to fixer context for repos
+      that do not use the docs/invariants tree (Gap B escape hatch).
+    required: false
+    default: ""
+  extra_prompt:
+    description: Repo-specific fixer rules appended to the prompt.
+    required: false
+    default: ""
+  trusted_only:
+    description: >-
+      When "true", only the PR author or an OWNER/MEMBER/COLLABORATOR may trigger
+      /autofix.
+    required: false
+    default: "true"
+  base_branch:
+    description: Base branch fetched for diff-based lint (e.g. make lint-gci-new).
+    required: false
+    default: develop
+  setup_go:
+    description: Set up Go + golangci-lint inside the action (Go-centric repos).
+    required: false
+    default: "true"
+  go_version_file:
+    description: go.mod path for actions/setup-go.
+    required: false
+    default: go.mod
+  golangci_lint_version:
+    description: golangci-lint version to install when setup_go is true.
+    required: false
+    default: v2.1.6
+  strategy:
+    description: >-
+      "rollback" (default, verifiable now): wrapper pushes to PR head; on gate
+      failure the action force-restores PR head to BASE_SHA. "sandbox"
+      (spike-gated): wrapper pushes to a scratch branch, fast-forwarded to PR
+      head only when gates pass — closes the transient broken-commit window but
+      depends on the wrapper honoring the checked-out branch (validate first).
+    required: false
+    default: rollback
+
+runs:
+  using: composite
+  steps:
+    # ── PR metadata, draft/trust gate, started ack (Gap D) ──────────────────
+    - name: Resolve PR and acknowledge
+      id: pr-info
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const owner = context.repo.owner;
+          const repo = context.repo.repo;
+          const issueNumber = context.payload.issue.number;
+          const commentId = context.payload.comment.id;
+          const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+          const trustedOnly = '${{ inputs.trusted_only }}' === 'true';
+
+          const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: issueNumber });
+
+          // Trust gate — only PR author or a trusted org member may trigger.
+          if (trustedOnly) {
+            const commenter = context.payload.comment.user.login;
+            const assoc = context.payload.comment.author_association;
+            const trusted = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+            if (commenter !== pr.user.login && !trusted.includes(assoc)) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `**OpenCode autofix skipped:** \`${commenter}\` is not the PR author or a trusted org member.`
+              });
+              core.setOutput('skip', 'true');
+              return;
+            }
+          }
+
+          await github.rest.reactions.createForIssueComment({ owner, repo, comment_id: commentId, content: 'eyes' });
+          await github.rest.issues.createComment({
+            owner, repo, issue_number: issueNumber,
+            body: `🔧 **OpenCode autofix started** for commit \`${pr.head.sha.slice(0, 7)}\`. [View workflow run](${runUrl})`
+          });
+
+          core.setOutput('skip', 'false');
+          core.setOutput('pr_number', String(issueNumber));
+          core.setOutput('head_ref', pr.head.ref);
+          core.setOutput('base_sha', pr.head.sha);
+
+    # ── Set up Go toolchain (Go-centric repos) ──────────────────────────────
+    - name: Set up Go
+      if: steps.pr-info.outputs.skip != 'true' && inputs.setup_go == 'true'
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: ${{ inputs.go_version_file }}
+        cache: true
+
+    - name: Install golangci-lint and fetch base branch
+      if: steps.pr-info.outputs.skip != 'true' && inputs.setup_go == 'true'
+      shell: bash
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+          | sh -s -- -b "$(go env GOPATH)/bin" "${{ inputs.golangci_lint_version }}"
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        git fetch origin "${{ inputs.base_branch }}:${{ inputs.base_branch }}" --force || true
+
+    # ── Prepare scoped findings ─────────────────────────────────────────────
+    - name: Prepare scoped findings
+      id: findings
+      if: steps.pr-info.outputs.skip != 'true'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const fs = require('fs');
+          const owner = context.repo.owner;
+          const repo = context.repo.repo;
+          const issueNumber = context.payload.issue.number;
+          const rawBody = context.payload.comment.body.trim();
+          const allowed = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']);
+          const defaults = '${{ inputs.default_severities }}'.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+
+          const excludedPatterns = `${{ inputs.excluded_paths }}`.split('\n').map(s => s.trim()).filter(Boolean);
+          function isExcludedPath(path) {
+            return excludedPatterns.some((pat) => {
+              if (pat.startsWith('*')) return path.endsWith(pat.slice(1));
+              if (pat.endsWith('/') && !pat.includes('*')) {
+                return path.includes(pat) || path.startsWith(pat);
+              }
+              return path.includes(pat);
+            });
+          }
+
+          function parseSeverities(body) {
+            const rest = body.replace(/^\/autofix\b/i, '').trim();
+            if (!rest) return defaults;
+            const parts = rest.split(/[\s,]+/).map(p => p.trim().toUpperCase()).filter(Boolean);
+            if (parts.includes('ALL')) return ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+            const invalid = parts.filter(p => !allowed.has(p));
+            if (invalid.length > 0) throw new Error(`Invalid severity: ${invalid.join(', ')}`);
+            return [...new Set(parts)];
+          }
+
+          function usage() {
+            return [
+              '**OpenCode autofix failed:** invalid severity.',
+              '',
+              'Usage: `/autofix`, `/autofix CRITICAL`, `/autofix HIGH,MEDIUM`, `/autofix ALL`'
+            ].join('\n');
+          }
+
+          function normalizeReviewJsonFinding(f) {
+            const severity = String(f.severity || '').toUpperCase();
+            return {
+              severity,
+              path: String(f.path || ''),
+              line: Number(f.line),
+              body: `[${severity}] ${String(f.title || '').trim()}\n${String(f.body || '').trim()}\nSuggested fix: ${String(f.suggested_fix || '').trim()}`.trim()
+            };
+          }
+          function extractJsonFindings(commentBody) {
+            if (!commentBody.includes('<!-- opencode-pr-review -->')) return [];
+            const m = commentBody.match(/<!-- findings-json-start -->([\s\S]*?)<!-- findings-json-end -->/);
+            if (!m) return [];
+            const parsed = JSON.parse(m[1].trim());
+            if (!Array.isArray(parsed)) throw new Error('Review findings JSON is not an array');
+            return parsed.map(normalizeReviewJsonFinding);
+          }
+          function normalizeInlineFinding(c) {
+            const m = c.body.match(/^\[(CRITICAL|HIGH|MEDIUM|LOW)\]/);
+            if (!m) return null;
+            return { severity: m[1], path: c.path, line: c.line, body: c.body };
+          }
+
+          let severities;
+          try {
+            severities = parseSeverities(rawBody);
+          } catch (e) {
+            await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: usage() });
+            core.setOutput('should_run', 'false');
+            core.setOutput('finding_count', '0');
+            return;
+          }
+          const selected = new Set(severities);
+
+          const issueComments = await github.paginate(github.rest.issues.listComments, {
+            owner, repo, issue_number: issueNumber, per_page: 100
+          });
+          const reviewJsonFindings = [];
+          for (const c of issueComments.reverse()) {
+            const f = extractJsonFindings(c.body || '');
+            if (f.length > 0) { reviewJsonFindings.push(...f); break; }
+          }
+
+          const inlineComments = await github.paginate(github.rest.pulls.listReviewComments, {
+            owner, repo, pull_number: issueNumber, per_page: 100
+          });
+          const inlineFindings = inlineComments.map(normalizeInlineFinding).filter(Boolean);
+
+          const all = [...reviewJsonFindings, ...inlineFindings];
+          const eligible = all.filter(f =>
+            selected.has(f.severity) &&
+            Number.isInteger(f.line) && f.line > 0 &&
+            f.path && !isExcludedPath(f.path)
+          );
+
+          fs.writeFileSync('findings_scoped.json', JSON.stringify(eligible, null, 2));
+          core.setOutput('severities', severities.join(','));
+          core.setOutput('finding_count', String(eligible.length));
+          core.setOutput('should_run', eligible.length > 0 ? 'true' : 'false');
+
+          if (eligible.length === 0) {
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: issueNumber,
+              body: `**OpenCode autofix skipped:** no eligible findings for \`${severities.join(',')}\`. Run \`/review\` first or pick a severity present in the latest review.`
+            });
+          }
+
+    # ── Build layered fixer context (Gap B) ─────────────────────────────────
+    - name: Build fixer context
+      if: steps.findings.outputs.should_run == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # Tier 1: optional domain invariants/architecture/testspecs (silent if absent).
+        bash "${{ github.action_path }}/../scripts/prepare-review-context.sh" \
+          "${{ steps.pr-info.outputs.pr_number }}" \
+          "${{ github.repository }}" || echo "::notice::No domain docs context produced (baseline-only)."
+
+        # Tier 2: escape-hatch extra context paths.
+        EXTRA_PATHS="${{ inputs.context_paths }}"
+        if [ -n "${EXTRA_PATHS}" ]; then
+          {
+            echo ""
+            echo "## Extra context (context_paths input)"
+            echo ""
+          } >> review_context.md 2>/dev/null || true
+          while IFS= read -r pattern; do
+            [ -z "${pattern}" ] && continue
+            for f in ${pattern}; do
+              [ -f "${f}" ] || continue
+              { echo "### \`${f}\`"; echo '```'; cat "${f}"; echo '```'; echo ""; } >> review_context.md
+            done
+          done <<< "${EXTRA_PATHS}"
+        fi
+
+    # ── Private cross-repo Go module access (Gap C) ─────────────────────────
+    - name: Configure private module access
+      if: steps.findings.outputs.should_run == 'true'
+      shell: bash
+      run: |
+        git config --global \
+          url."https://x-access-token:${{ inputs.git_token }}@github.com/".insteadOf \
+          "https://github.com/"
+
+    # ── Capture base + create sandbox branch ────────────────────────────────
+    - name: Capture base and prepare branch
+      id: branch
+      if: steps.findings.outputs.should_run == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.git_token }}
+      run: |
+        BASE_SHA="${{ steps.pr-info.outputs.base_sha }}"
+        HEAD_REF="${{ steps.pr-info.outputs.head_ref }}"
+        echo "base_sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
+
+        if [ "${{ inputs.strategy }}" = "sandbox" ]; then
+          SANDBOX="autofix/pr-${{ steps.pr-info.outputs.pr_number }}-${{ github.run_id }}"
+          git fetch origin "${HEAD_REF}" --force
+          git checkout -B "${SANDBOX}" "origin/${HEAD_REF}"
+          echo "sandbox=${SANDBOX}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Sandbox strategy — wrapper edits will be staged on ${SANDBOX}. Spike-gated: verify the wrapper honors this branch."
+        else
+          git fetch origin "${HEAD_REF}" --force
+          git checkout -B "${HEAD_REF}" "origin/${HEAD_REF}"
+          echo "::notice::Rollback strategy — gate-after-push with force-restore to ${BASE_SHA} on failure."
+        fi
+
+    # ── Run OpenCode autofix ────────────────────────────────────────────────
+    - name: Run OpenCode autofix
+      if: steps.findings.outputs.should_run == 'true'
+      uses: anomalyco/opencode/github@v1.17.6
+      env:
+        OPENCODE_API_KEY: ${{ inputs.opencode_api_key }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      with:
+        model: ${{ inputs.model }}
+        variant: ${{ inputs.variant }}
+        mentions: /autofix
+        share: "false"
+        use_github_token: ${{ inputs.use_github_token }}
+        prompt: |
+          You are applying scoped PR review autofixes.
+
+          Required first step:
+          - Read findings_scoped.json.
+          - If review_context.md exists, read it next — it holds repository coding
+            standards (AGENTS.md/CLAUDE.md), cross-domain invariants, and per-domain
+            RULE-XXX invariants/testspecs. Every fix MUST respect these invariants,
+            even ones not directly cited in the finding.
+
+          Scope rules:
+          - Fix only findings listed in findings_scoped.json. Edit only those files.
+          - Do not edit migrations, generated protobuf, generated mocks, or files
+            outside the findings list.
+          - Do not create, modify, or commit findings_scoped.json or review_context.md
+            in the final diff.
+          - Do not run git commit or git push yourself. The Action handles git.
+
+          Interface safety:
+          - Before changing a function call or its arguments, read the relevant
+            interface file to confirm argument types, count, and positions.
+          - If a suggested fix has type mismatches, derive the correct code from intent
+            rather than copying verbatim.
+          - If a fix would require changing an interface signature, skip it and record
+            it in autofix_skipped.json with reason: "requires interface change."
+
+          Coupled-finding detection:
+          - Before a structural fix (e.g. moving a DB call out of a loop), check whether
+            another finding addresses the same call/variable. If that companion finding
+            is being skipped, skip the whole coupled group and record all of them in
+            autofix_skipped.json explaining the dependency.
+
+          Dead-call prevention:
+          - After applying fixes, scan for `_ = <expr>` where the RHS is a repository/DB
+            call. If your change introduced or left one, revert that fix and record it in
+            autofix_skipped.json with reason: "partial fix would leave a dead DB call —
+            companion fix must be applied together."
+
+          autofix_skipped.json:
+          - After processing all findings, write a JSON array of ALL findings you did
+            NOT apply (excluding already-fixed ones):
+            [{"path":"...","line":<number or null>,"body":"<first line>","reason":"<one sentence>"}]
+          - If nothing was skipped, write an empty array: []
+
+          Repository rules:
+          - Follow AGENTS.md. Keep changes minimal and localized.
+          - Do not change public interfaces unless the finding explicitly requires it and
+            the existing code proves it is safe.
+          ${{ inputs.extra_prompt }}
+
+          Verification loop:
+          - Run these commands in order; if any fails, fix the minimal issue inside the
+            scoped files and restart from the first command (max 3 cycles):
+          ${{ inputs.verify_commands }}
+          - If a lint/format command rewrites files, keep those changes and restart.
+
+          Failure behavior:
+          - If verification still fails after 3 cycles, run `git restore .` and
+            `git clean -fd` so no autofix changes remain, then finish with a clear failure
+            response naming the failing command and the findings that need manual work.
+          - A failed run must leave a clean working tree.
+
+          Success behavior:
+          - Before finishing, remove findings_scoped.json and review_context.md if present.
+          - Leave the source + any formatting changes in the working tree.
+          - Finish with a concise summary of fixed findings, skipped findings, and
+            confirmation the verification commands passed.
+
+    # ── Post-fix verification gate + correct finalize ───────────────────────
+    - name: Verify and finalize
+      if: steps.findings.outputs.should_run == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.git_token }}
+        PR_NUMBER: ${{ steps.pr-info.outputs.pr_number }}
+        HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
+        BASE_SHA: ${{ steps.branch.outputs.base_sha }}
+        SANDBOX: ${{ steps.branch.outputs.sandbox }}
+        SEVERITIES: ${{ steps.findings.outputs.severities }}
+        STRATEGY: ${{ inputs.strategy }}
+        VERIFY_COMMANDS: ${{ inputs.verify_commands }}
+      run: |
+        set -uo pipefail
+        git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+        # Run the same verify_commands as a hard gate (Gap F: single source of truth).
+        FAILED=""
+        while IFS= read -r cmd; do
+          [ -z "${cmd}" ] && continue
+          echo "==> Gate: ${cmd}"
+          if ! bash -c "${cmd}"; then FAILED="${cmd}"; break; fi
+        done <<< "${VERIFY_COMMANDS}"
+
+        post() { gh pr comment "${PR_NUMBER}" --body "$1"; }
+
+        if [ -n "${FAILED}" ]; then
+          echo "Gate failed: ${FAILED} — restoring PR head to ${BASE_SHA}"
+          if [ "${STRATEGY}" = "sandbox" ] && [ -n "${SANDBOX:-}" ]; then
+            git push origin --delete "${SANDBOX}" || true
+          else
+            # Force PR head back to the pre-autofix commit — undoes any wrapper push.
+            git push --force-with-lease origin "${BASE_SHA}:refs/heads/${HEAD_REF}" || \
+              git push --force origin "${BASE_SHA}:refs/heads/${HEAD_REF}"
+          fi
+          post "**OpenCode autofix reverted:** \`${FAILED}\` failed after applying fixes. PR branch restored to \`${BASE_SHA:0:7}\` — please apply these findings manually."
+          exit 0
+        fi
+
+        echo "All gates passed."
+        if [ "${STRATEGY}" = "sandbox" ] && [ -n "${SANDBOX:-}" ]; then
+          # Fast-forward PR head to the vetted sandbox commit, then drop the sandbox.
+          git push --force-with-lease origin "HEAD:refs/heads/${HEAD_REF}"
+          git push origin --delete "${SANDBOX}" || true
+        else
+          # Rollback strategy: ensure the vetted commit is the PR head (no-op if wrapper already pushed it).
+          git push origin "HEAD:refs/heads/${HEAD_REF}" || true
+        fi
+
+        # Summary (fixed + skipped).
+        SKIPPED_SECTION=""
+        if [ -f autofix_skipped.json ]; then
+          SKIPPED_COUNT=$(jq 'length' autofix_skipped.json)
+          if [ "${SKIPPED_COUNT}" -gt 0 ]; then
+            SKIPPED_LIST=$(jq -r '.[] | "- `\(.path):\(.line // "?")` — \(.body | split("\n")[0])\n  _Reason: \(.reason)_"' autofix_skipped.json)
+            SKIPPED_SECTION=$(printf '\n\n### Skipped — requires manual fix\n\n%s' "${SKIPPED_LIST}")
+          fi
+        fi
+        post "$(printf '## OpenCode Autofix Applied\n\nSeverities targeted: `%s`\n\nVerification gates passed.%s' "${SEVERITIES}" "${SKIPPED_SECTION}")"
+
+    # ── Failure safety net ──────────────────────────────────────────────────
+    - name: Post failure comment
+      if: failure()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh pr comment "${{ steps.pr-info.outputs.pr_number || github.event.issue.number }}" \
+          --body "**OpenCode autofix failed unexpectedly.** Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true

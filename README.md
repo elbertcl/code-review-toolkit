@@ -98,6 +98,79 @@ jobs:
 
 Keep repo-specific review policy in the consuming repo, for example `AGENTS.md`, `docs/review-dimensions.md`, or `.github/instructions/review-depth.instructions.md`.
 
+## OpenCode Autofix
+
+Use `opencode-autofix` to let OpenCode apply scoped review fixes from an `/autofix`
+comment. It reads findings from the latest OpenCode review verdict (the
+`<!-- findings-json-start -->` block) plus inline `[SEVERITY]` review comments, fixes
+only the selected severities, runs the repo's own verification commands as a hard
+gate, and **guarantees the PR branch never ends in a broken state** — on gate failure
+it force-restores the PR head to the pre-autofix commit.
+
+```yaml
+name: OpenCode PR Autofix
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  autofix:
+    if: |
+      github.event.issue.pull_request != null &&
+      (github.event.comment.body == '/autofix' || startsWith(github.event.comment.body, '/autofix '))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: elbertcl/code-review-toolkit/opencode-autofix@v1
+        with:
+          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
+          use_github_token: true
+          verify_commands: |
+            make build-all
+            make test
+            make lint
+            make lint-gci-new
+```
+
+Usage: `/autofix` (defaults to `CRITICAL,HIGH`), `/autofix HIGH,MEDIUM`, `/autofix ALL`.
+
+### Reusing across repos without quality loss
+
+Everything repo-specific is an **input**, not forked code — adopting repos only add the
+trigger workflow above:
+
+- `verify_commands` — the build/test/lint commands run as both the fixer's self-verify
+  loop and the post-fix gate (single source of truth).
+- `excluded_paths` — paths autofix must never touch (migrations, generated code).
+- `git_token` — set a PAT here when `verify_commands` builds against **private
+  cross-repo** Go modules; defaults to the repo `GITHUB_TOKEN`.
+- `context_paths` / `extra_prompt` — point at any repo's own docs/spec.
+
+Context is **layered and degrades gracefully**: `AGENTS.md`/`CLAUDE.md` is the universal
+baseline; `docs/invariants|architecture|testspecs` are loaded automatically *if present*
+(reusing `scripts/prepare-review-context.sh`); `context_paths` is the escape hatch for
+repos with a different docs layout. No repo is forced to adopt an opinionated structure.
+
+### Gate-before-push strategy
+
+`strategy: rollback` (default) is correct on any runner: the OpenCode wrapper commits to
+the PR branch, gates run, and a failure force-restores the PR head — the branch never
+*ends* broken. `strategy: sandbox` additionally avoids the transient broken commit by
+staging the wrapper's work on a scratch branch and fast-forwarding only when gates pass;
+it depends on the wrapper honoring the checked-out branch, so validate that on your runner
+before switching.
+
 ## Versioning
 
 Pin to a tag (`@v1`, `@v1.0.0`) for stability. The tag covers both the action logic and the bundled skills/scripts.
