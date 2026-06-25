@@ -85,9 +85,14 @@ inputs:
     required: false
     default: go.mod
   golangci_lint_version:
-    description: golangci-lint version to install when setup_go is true.
+    description: >-
+      golangci-lint version to install when setup_go is true. Must be a release
+      built with a Go toolchain >= the consuming repo's go.mod version, or
+      `golangci-lint run` fails with "language version used to build
+      golangci-lint is lower than the targeted Go version" — a tooling failure
+      that incorrectly triggers the autofix rollback gate.
     required: false
-    default: v2.1.6
+    default: v2.12.2
   strategy:
     description: >-
       "rollback" (default, verifiable now): wrapper pushes to PR head; on gate
