@@ -30,7 +30,7 @@
 #   - AGENTS.md or CLAUDE.md (coding standards) — whichever exists
 #   - cross-domain.md invariants — if present
 #   - Per-domain: invariants, architecture doc, repository interface,
-#     entity files, testspecs, implspecs
+#     entity files, testspecs
 #
 # What is NOT included:
 #   - PR diff (already in context from gh pr diff in the workflow)
@@ -255,15 +255,6 @@ for domain in "${TOUCHED_DOMAINS[@]}"; do
       echo "" >> "$OUT"
     done
   fi
-
-  # Active implspec for this domain (if any)
-  for spec in docs/implspecs/*"${domain}"*.md; do
-    [ -f "$spec" ] || continue
-    echo "### Active Implspec (\`${spec}\`)" >> "$OUT"
-    echo "" >> "$OUT"
-    cat "$spec" >> "$OUT"
-    echo "" >> "$OUT"
-  done
 
   echo "---" >> "$OUT"
   echo "" >> "$OUT"

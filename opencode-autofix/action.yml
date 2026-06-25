@@ -323,8 +323,7 @@ runs:
           INV=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Invariants" || true)
           ARCH=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Architecture" || true)
           SPEC=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Testspecs" || true)
-          IMPL=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Active Implspec" || true)
-          ROWS="${ROWS}| \`${domain}\` | $([ "$INV" -gt 0 ] && echo "✅" || echo "—") | $([ "$ARCH" -gt 0 ] && echo "✅" || echo "—") | $([ "$SPEC" -gt 0 ] && echo "✅" || echo "—") | $([ "$IMPL" -gt 0 ] && echo "✅" || echo "—") |\n"
+          ROWS="${ROWS}| \`${domain}\` | $([ "$INV" -gt 0 ] && echo "✅" || echo "—") | $([ "$ARCH" -gt 0 ] && echo "✅" || echo "—") | $([ "$SPEC" -gt 0 ] && echo "✅" || echo "—") |\n"
         done <<< "$DOMAINS"
 
         BASELINE=""
@@ -335,19 +334,21 @@ runs:
         if [ "$DOMAIN_COUNT" -eq 0 ]; then
           DOMAIN_SECTION="⚠️ **No domains detected** — only baseline context was loaded. Autofix may lack domain-specific invariants and testspecs."
         else
-          DOMAIN_SECTION="$(printf "| Domain | Invariants | Architecture | Testspecs | Implspec |\n|---|---|---|---|---|\n%b" "$ROWS")"
+          DOMAIN_SECTION="$(printf "| Domain | Invariants | Architecture | Testspecs |\n|---|---|---|---|\n%b" "$ROWS")"
         fi
 
         gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Autofix context loaded** — %s lines · %s domain(s)\n\n%s\n\n> %s' "$LINE_COUNT" "$DOMAIN_COUNT" "$DOMAIN_SECTION" "$BASELINE")"
 
-    # ── Private cross-repo Go module access (Gap C) ─────────────────────────
-    - name: Configure private module access
+    # ── Private cross-repo Go module access (Gap C) + git identity ──────────
+    - name: Configure private module access and git identity
       if: steps.findings.outputs.should_run == 'true'
       shell: bash
       run: |
         git config --global \
           url."https://x-access-token:${{ inputs.git_token }}@github.com/".insteadOf \
           "https://github.com/"
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
     # ── Capture base + create sandbox branch ────────────────────────────────
     - name: Capture base and prepare branch
