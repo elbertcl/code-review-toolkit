@@ -51,8 +51,21 @@ inputs:
       mocks/
   verify_commands:
     description: >-
-      Newline-separated verification commands. Run BOTH as the post-fix gate and
-      quoted into the fixer's self-verify loop — single source of truth (Gap F).
+      Newline-separated verification commands run ONCE as the authoritative
+      post-fix gate (decides rollback). The fixer's own self-check uses
+      `self_check_commands` instead — keeps the full suite from running twice.
+      List cheapest/fastest commands first so a failure short-circuits before
+      paying for expensive ones.
+    required: false
+    default: |
+      make build
+  self_check_commands:
+    description: >-
+      Newline-separated cheap commands the fixer runs in its own self-verify
+      loop (compile/build-only by default) to self-correct before handoff.
+      The full `verify_commands` gate re-checks independently afterward and is
+      the only thing that decides rollback — the fixer's self-report is never
+      trusted on its own.
     required: false
     default: |
       make build
@@ -148,23 +161,6 @@ runs:
           core.setOutput('head_ref', pr.head.ref);
           core.setOutput('base_sha', pr.head.sha);
 
-    # ── Set up Go toolchain (Go-centric repos) ──────────────────────────────
-    - name: Set up Go
-      if: steps.pr-info.outputs.skip != 'true' && inputs.setup_go == 'true'
-      uses: actions/setup-go@v5
-      with:
-        go-version-file: ${{ inputs.go_version_file }}
-        cache: true
-
-    - name: Install golangci-lint and fetch base branch
-      if: steps.pr-info.outputs.skip != 'true' && inputs.setup_go == 'true'
-      shell: bash
-      run: |
-        curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
-          | sh -s -- -b "$(go env GOPATH)/bin" "${{ inputs.golangci_lint_version }}"
-        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-        git fetch origin "${{ inputs.base_branch }}:${{ inputs.base_branch }}" --force || true
-
     # ── Prepare scoped findings ─────────────────────────────────────────────
     - name: Prepare scoped findings
       id: findings
@@ -244,11 +240,15 @@ runs:
           }
           const selected = new Set(severities);
 
+          // Only trust findings authored by the review bot itself — anyone with comment
+          // access could otherwise post a fake [SEVERITY] inline comment or a forged
+          // <!-- opencode-pr-review --> findings block and have it treated as real.
           const issueComments = await github.paginate(github.rest.issues.listComments, {
             owner, repo, issue_number: issueNumber, per_page: 100
           });
           const reviewJsonFindings = [];
           for (const c of issueComments.reverse()) {
+            if (c.user.login !== 'github-actions[bot]') continue;
             const f = extractJsonFindings(c.body || '');
             if (f.length > 0) { reviewJsonFindings.push(...f); break; }
           }
@@ -256,7 +256,10 @@ runs:
           const inlineComments = await github.paginate(github.rest.pulls.listReviewComments, {
             owner, repo, pull_number: issueNumber, per_page: 100
           });
-          const inlineFindings = inlineComments.map(normalizeInlineFinding).filter(Boolean);
+          const inlineFindings = inlineComments
+            .filter(c => c.user.login === 'github-actions[bot]')
+            .map(normalizeInlineFinding)
+            .filter(Boolean);
 
           const all = [...reviewJsonFindings, ...inlineFindings];
           const eligible = all.filter(f =>
@@ -276,6 +279,33 @@ runs:
               body: `**OpenCode autofix skipped:** no eligible findings for \`${severities.join(',')}\`. Run \`/review\` first or pick a severity present in the latest review.`
             });
           }
+
+    # ── Set up Go toolchain (Go-centric repos) — gated on eligible findings ──
+    - name: Set up Go
+      if: steps.findings.outputs.should_run == 'true' && inputs.setup_go == 'true'
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: ${{ inputs.go_version_file }}
+        cache: true
+
+    - name: Cache golangci-lint
+      id: lint-cache
+      if: steps.findings.outputs.should_run == 'true' && inputs.setup_go == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/go/bin/golangci-lint
+        key: golangci-lint-${{ inputs.golangci_lint_version }}-${{ runner.os }}
+
+    - name: Install golangci-lint and fetch base branch
+      if: steps.findings.outputs.should_run == 'true' && inputs.setup_go == 'true'
+      shell: bash
+      run: |
+        if [ "${{ steps.lint-cache.outputs.cache-hit }}" != "true" ]; then
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" "${{ inputs.golangci_lint_version }}"
+        fi
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        git fetch origin "${{ inputs.base_branch }}:${{ inputs.base_branch }}" --force || true
 
     # ── Build layered fixer context (Gap B) ─────────────────────────────────
     - name: Build fixer context
@@ -354,6 +384,18 @@ runs:
           "https://github.com/"
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+    # ── Pre-warm Go module cache while the PAT is configured, then drop it ──
+    # The cross-org PAT only needs to be reachable to resolve private modules.
+    # Once modules are cached locally, neither the agent nor build/test/lint
+    # need network module auth — narrow the token's exposure window.
+    - name: Pre-warm Go modules and drop private module token
+      if: steps.findings.outputs.should_run == 'true' && inputs.setup_go == 'true'
+      shell: bash
+      run: |
+        go mod download all || true
+        git config --global --unset \
+          url."https://x-access-token:${{ inputs.git_token }}@github.com/".insteadOf || true
 
     # ── Capture base + create sandbox branch ────────────────────────────────
     - name: Capture base and prepare branch
@@ -442,10 +484,11 @@ runs:
             the existing code proves it is safe.
           ${{ inputs.extra_prompt }}
 
-          Verification loop:
+          Verification loop (cheap self-check only — the Action re-verifies independently
+          afterward with the full suite and is the sole authority on rollback):
           - Run these commands in order; if any fails, fix the minimal issue inside the
             scoped files and restart from the first command (max 3 cycles):
-          ${{ inputs.verify_commands }}
+          ${{ inputs.self_check_commands }}
           - If a lint/format command rewrites files, keep those changes and restart.
 
           Failure behavior:
@@ -477,7 +520,8 @@ runs:
         set -uo pipefail
         git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
-        # Run the same verify_commands as a hard gate (Gap F: single source of truth).
+        # Run verify_commands as the sole hard gate (full suite runs exactly once;
+        # the fixer's own self-check is cheap and never trusted for the rollback decision).
         FAILED=""
         while IFS= read -r cmd; do
           [ -z "${cmd}" ] && continue
@@ -493,8 +537,12 @@ runs:
             git push origin --delete "${SANDBOX}" || true
           else
             # Force PR head back to the pre-autofix commit — undoes any wrapper push.
-            git push --force-with-lease origin "${BASE_SHA}:refs/heads/${HEAD_REF}" || \
-              git push --force origin "${BASE_SHA}:refs/heads/${HEAD_REF}"
+            # No --force fallback: if the lease is rejected, the branch moved during
+            # this run (concurrent push) — fail loudly instead of clobbering it.
+            if ! git push --force-with-lease origin "${BASE_SHA}:refs/heads/${HEAD_REF}"; then
+              post "**OpenCode autofix gate failed AND rollback was rejected:** \`${HEAD_REF}\` moved during this run (concurrent push?). PR head was NOT restored automatically — please check the branch state manually."
+              exit 1
+            fi
           fi
           post "**OpenCode autofix reverted:** \`${FAILED}\` failed after applying fixes. PR branch restored to \`${BASE_SHA:0:7}\` — please apply these findings manually."
           exit 0

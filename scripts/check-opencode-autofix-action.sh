@@ -41,13 +41,24 @@ require_in_file "${action_file}" "insteadOf"
 require_in_file "${action_file}" "createForIssueComment"
 require_in_file "${action_file}" "OpenCode autofix started"
 
-# ── Gap F: verify_commands is the single source of truth (gate + prompt) ──────
+# ── Gap F: verify_commands is the sole gate; self_check_commands is the cheap,
+#    untrusted fixer self-check — the full suite must run exactly once ────────
 require_in_file "${action_file}" "verify_commands"
-require_in_file "${action_file}" "Gap F: single source of truth"
+require_in_file "${action_file}" "self_check_commands"
+require_in_file "${action_file}" "never trusted"
 
 # ── Trust gate + skipped-findings reporting ───────────────────────────────────
 require_in_file "${action_file}" "trusted_only"
 require_in_file "${action_file}" "autofix_skipped.json"
+
+# ── Security: findings ingestion must be author-filtered to the review bot ────
+require_in_file "${action_file}" "github-actions[bot]"
+
+# ── Security: no plain --force fallback on rollback push ──────────────────────
+if grep -F -- '--force-with-lease' "${action_file}" | grep -q -- '|| .*git push --force '; then
+  printf 'expected %s to NOT fall back to plain --force on lease failure\n' "${action_file}" >&2
+  exit 1
+fi
 
 # ── Context script remains autofix-aware ──────────────────────────────────────
 require_in_file "${context_script}" "findings_scoped.json"
