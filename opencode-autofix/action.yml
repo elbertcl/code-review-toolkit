@@ -2,8 +2,9 @@ name: OpenCode PR Autofix
 description: >-
   Apply scoped PR-review autofixes via OpenCode. Reads findings from the latest
   OpenCode review verdict (JSON block) plus inline review comments, fixes only
-  the selected severities, runs repo-defined verification gates, and guarantees
-  the PR branch never ends in a broken state.
+  the selected severities, and runs repo-defined verification gates against a
+  local-only sandbox branch before publishing — the PR's real branch is never
+  touched until the fix is verified, so there is nothing to revert on failure.
 
 inputs:
   opencode_api_key:
@@ -106,17 +107,6 @@ inputs:
       that incorrectly triggers the autofix rollback gate.
     required: false
     default: v2.12.2
-  strategy:
-    description: >-
-      "rollback" (default): wrapper pushes to PR head; on gate failure the
-      action force-restores PR head to BASE_SHA. "sandbox" (validated 2026-06-29
-      on PR #733): wrapper commits to a LOCAL-only checked-out branch (never
-      pushed to origin — the runner is ephemeral, so it's discarded with the
-      job, nothing to clean up); the action fast-forwards PR head to that
-      commit only when gates pass. Closes the transient broken-commit window
-      without ever exposing unverified code on the PR's real branch.
-    required: false
-    default: rollback
 
 runs:
   using: composite
@@ -408,8 +398,14 @@ runs:
         git config --global --unset \
           url."https://x-access-token:${{ inputs.git_token }}@github.com/".insteadOf || true
 
-    # ── Capture base + create sandbox branch ────────────────────────────────
-    - name: Capture base and prepare branch
+    # ── Capture base + stage a local-only sandbox branch ────────────────────
+    # Wrapper commits land on this LOCAL checked-out branch, never the PR's
+    # real branch — validated 2026-06-29 on PR #733 (wrapper honors whatever
+    # is checked out; it isn't hard-coded to the PR head ref). The branch is
+    # never pushed to origin and is discarded with the ephemeral runner —
+    # nothing to clean up. Gate failure means simply not publishing it; the
+    # PR's real branch is never touched, so there is no revert push to do.
+    - name: Capture base and stage sandbox branch
       id: branch
       if: steps.findings.outputs.should_run == 'true'
       shell: bash
@@ -418,19 +414,12 @@ runs:
       run: |
         BASE_SHA="${{ steps.pr-info.outputs.base_sha }}"
         HEAD_REF="${{ steps.pr-info.outputs.head_ref }}"
+        SANDBOX="autofix/pr-${{ steps.pr-info.outputs.pr_number }}-${{ github.run_id }}"
         echo "base_sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
+        echo "sandbox=${SANDBOX}" >> "$GITHUB_OUTPUT"
 
-        if [ "${{ inputs.strategy }}" = "sandbox" ]; then
-          SANDBOX="autofix/pr-${{ steps.pr-info.outputs.pr_number }}-${{ github.run_id }}"
-          git fetch origin "${HEAD_REF}" --force
-          git checkout -B "${SANDBOX}" "origin/${HEAD_REF}"
-          echo "sandbox=${SANDBOX}" >> "$GITHUB_OUTPUT"
-          echo "::notice::Sandbox strategy — wrapper edits will be staged on ${SANDBOX}. Spike-gated: verify the wrapper honors this branch."
-        else
-          git fetch origin "${HEAD_REF}" --force
-          git checkout -B "${HEAD_REF}" "origin/${HEAD_REF}"
-          echo "::notice::Rollback strategy — gate-after-push with force-restore to ${BASE_SHA} on failure."
-        fi
+        git fetch origin "${HEAD_REF}" --force
+        git checkout -B "${SANDBOX}" "origin/${HEAD_REF}"
 
     # ── Run OpenCode autofix ────────────────────────────────────────────────
     - name: Run OpenCode autofix
@@ -514,25 +503,22 @@ runs:
           - Finish with a concise summary of fixed findings, skipped findings, and
             confirmation the verification commands passed.
 
-    # ── Post-fix verification gate + correct finalize ───────────────────────
-    - name: Verify and finalize
+    # ── Post-fix verification gate + publish ────────────────────────────────
+    - name: Verify and publish
       if: steps.findings.outputs.should_run == 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.git_token }}
         PR_NUMBER: ${{ steps.pr-info.outputs.pr_number }}
         HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
-        BASE_SHA: ${{ steps.branch.outputs.base_sha }}
-        SANDBOX: ${{ steps.branch.outputs.sandbox }}
         SEVERITIES: ${{ steps.findings.outputs.severities }}
-        STRATEGY: ${{ inputs.strategy }}
         VERIFY_COMMANDS: ${{ inputs.verify_commands }}
       run: |
         set -uo pipefail
         git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
         # Run verify_commands as the sole hard gate (full suite runs exactly once;
-        # the fixer's own self-check is cheap and never trusted for the rollback decision).
+        # the fixer's own self-check is cheap and never trusted for the publish decision).
         FAILED=""
         while IFS= read -r cmd; do
           [ -z "${cmd}" ] && continue
@@ -543,30 +529,22 @@ runs:
         post() { gh pr comment "${PR_NUMBER}" --body "$1"; }
 
         if [ -n "${FAILED}" ]; then
-          echo "Gate failed: ${FAILED} — restoring PR head to ${BASE_SHA}"
-          if [ "${STRATEGY}" = "sandbox" ] && [ -n "${SANDBOX:-}" ]; then
-            git push origin --delete "${SANDBOX}" || true
-          else
-            # Force PR head back to the pre-autofix commit — undoes any wrapper push.
-            # No --force fallback: if the lease is rejected, the branch moved during
-            # this run (concurrent push) — fail loudly instead of clobbering it.
-            if ! git push --force-with-lease origin "${BASE_SHA}:refs/heads/${HEAD_REF}"; then
-              post "**OpenCode autofix gate failed AND rollback was rejected:** \`${HEAD_REF}\` moved during this run (concurrent push?). PR head was NOT restored automatically — please check the branch state manually."
-              exit 1
-            fi
-          fi
-          post "**OpenCode autofix reverted:** \`${FAILED}\` failed after applying fixes. PR branch restored to \`${BASE_SHA:0:7}\` — please apply these findings manually."
+          # The sandbox branch only ever existed locally on this runner — it was
+          # never pushed to origin, so there is nothing to delete and nothing to
+          # revert on the PR's real branch. It is simply discarded with the job.
+          echo "Gate failed: ${FAILED} — discarding local sandbox branch, PR head untouched"
+          post "**OpenCode autofix did not apply:** \`${FAILED}\` failed during verification. The PR branch was never touched — please apply these findings manually."
           exit 0
         fi
 
         echo "All gates passed."
-        if [ "${STRATEGY}" = "sandbox" ] && [ -n "${SANDBOX:-}" ]; then
-          # Fast-forward PR head to the vetted sandbox commit, then drop the sandbox.
-          git push --force-with-lease origin "HEAD:refs/heads/${HEAD_REF}"
-          git push origin --delete "${SANDBOX}" || true
-        else
-          # Rollback strategy: ensure the vetted commit is the PR head (no-op if wrapper already pushed it).
-          git push origin "HEAD:refs/heads/${HEAD_REF}" || true
+        # First publish of the vetted commit to the PR's real branch. Not a
+        # revert — --force-with-lease here only guards against a concurrent
+        # push racing this run; it never rewrites history that was already
+        # visible on the PR.
+        if ! git push --force-with-lease origin "HEAD:refs/heads/${HEAD_REF}"; then
+          post "**OpenCode autofix gate passed but publish was rejected:** \`${HEAD_REF}\` moved during this run (concurrent push?). The verified fix was NOT published — please rerun \`/autofix\`."
+          exit 1
         fi
 
         # Summary (fixed + skipped).

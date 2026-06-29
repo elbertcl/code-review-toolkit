@@ -23,10 +23,15 @@ require_in_file "${action_file}" "<!-- opencode-pr-review -->"
 require_in_file "${action_file}" "findings-json-start"
 require_in_file "${action_file}" "findings_scoped.json"
 
-# ── Gap A: capture base + correct finalize (no cosmetic revert) ────────────────
+# ── Gap A: sandbox-only — PR's real branch is never touched until verified,
+#    so there is no revert/restore push on the failure path ──────────────────
 require_in_file "${action_file}" "base_sha"
 require_in_file "${action_file}" "force-with-lease"
-require_in_file "${action_file}" "restored to"
+require_in_file "${action_file}" "PR head untouched"
+if grep -Eq 'strategy:|STRATEGY' "${action_file}"; then
+  printf 'expected %s to have no rollback/strategy branching left (sandbox-only)\n' "${action_file}" >&2
+  exit 1
+fi
 
 # ── Gap B: layered context contract reuses the review-context script ──────────
 require_in_file "${action_file}" 'prepare-review-context.sh'
