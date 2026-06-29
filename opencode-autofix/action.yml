@@ -108,11 +108,13 @@ inputs:
     default: v2.12.2
   strategy:
     description: >-
-      "rollback" (default, verifiable now): wrapper pushes to PR head; on gate
-      failure the action force-restores PR head to BASE_SHA. "sandbox"
-      (spike-gated): wrapper pushes to a scratch branch, fast-forwarded to PR
-      head only when gates pass — closes the transient broken-commit window but
-      depends on the wrapper honoring the checked-out branch (validate first).
+      "rollback" (default): wrapper pushes to PR head; on gate failure the
+      action force-restores PR head to BASE_SHA. "sandbox" (validated 2026-06-29
+      on PR #733): wrapper commits to a LOCAL-only checked-out branch (never
+      pushed to origin — the runner is ephemeral, so it's discarded with the
+      job, nothing to clean up); the action fast-forwards PR head to that
+      commit only when gates pass. Closes the transient broken-commit window
+      without ever exposing unverified code on the PR's real branch.
     required: false
     default: rollback
 
@@ -397,7 +399,12 @@ runs:
       if: steps.findings.outputs.should_run == 'true' && inputs.setup_go == 'true'
       shell: bash
       run: |
-        go mod download all || true
+        # `go mod download` (no "all") only resolves the main module's actual
+        # build list. `download all` pulls the ENTIRE transitive module graph —
+        # every module any dependency's go.mod references, even ones never
+        # imported — and writes go.sum entries for all of it, producing
+        # hundreds of unrelated lines that then ride along in the fix commit.
+        go mod download || true
         git config --global --unset \
           url."https://x-access-token:${{ inputs.git_token }}@github.com/".insteadOf || true
 
