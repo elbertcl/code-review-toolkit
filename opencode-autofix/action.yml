@@ -226,7 +226,11 @@ runs:
           function normalizeInlineFinding(c) {
             const m = c.body.match(/^\[(CRITICAL|HIGH|MEDIUM|LOW)\]/);
             if (!m) return null;
-            return { severity: m[1], path: c.path, line: c.line, body: c.body };
+            // GitHub nulls `line` for comments anchored to a commit_id that is no
+            // longer the PR's current diff base ("outdated"), keeping only
+            // `original_line`. Fall back to it — the finding is still valid as
+            // long as the file region hasn't actually changed.
+            return { severity: m[1], path: c.path, line: c.line ?? c.original_line, body: c.body };
           }
 
           let severities;
