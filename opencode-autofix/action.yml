@@ -52,11 +52,14 @@ inputs:
       mocks/
   verify_commands:
     description: >-
-      Newline-separated verification commands run ONCE as the authoritative
-      post-fix gate (decides rollback). The fixer's own self-check uses
-      `self_check_commands` instead — keeps the full suite from running twice.
-      List cheapest/fastest commands first so a failure short-circuits before
-      paying for expensive ones.
+      Verification commands run ONCE as the authoritative post-fix gate
+      (decides rollback). The fixer's own self-check uses `self_check_commands`
+      instead — keeps the full suite from running twice. Newline-separated;
+      group into stages with a blank line. Commands within a stage run in
+      parallel; stages run sequentially, and any failure in a stage aborts
+      before the next stage starts. Put file-mutating commands (formatters)
+      in their own earlier stage so concurrent readers in a later stage never
+      see a half-written file.
     required: false
     default: |
       make build
@@ -292,6 +295,20 @@ runs:
         path: ~/go/bin/golangci-lint
         key: golangci-lint-${{ inputs.golangci_lint_version }}-${{ runner.os }}
 
+    # golangci-lint's own analysis cache is incremental per-file (like the Go
+    # build cache) — restoring it lets unchanged files skip re-analysis even
+    # though go.sum rarely matches the running PR's exact tree. restore-keys
+    # falls back to the most recent cache on a key-prefix miss instead of
+    # starting cold.
+    - name: Cache golangci-lint analysis
+      if: steps.findings.outputs.should_run == 'true' && inputs.setup_go == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/golangci-lint
+        key: golangci-lint-analysis-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          golangci-lint-analysis-${{ runner.os }}-
+
     - name: Install golangci-lint and fetch base branch
       if: steps.findings.outputs.should_run == 'true' && inputs.setup_go == 'true'
       shell: bash
@@ -519,12 +536,46 @@ runs:
 
         # Run verify_commands as the sole hard gate (full suite runs exactly once;
         # the fixer's own self-check is cheap and never trusted for the publish decision).
+        # Commands are grouped into stages by blank lines: each stage's commands run
+        # in parallel (they're independent checks), stages run sequentially so a
+        # mutating stage (e.g. a formatter) finishes before a later stage reads the
+        # same files.
         FAILED=""
+        STAGE=()
+
+        run_stage() {
+          [ "${#STAGE[@]}" -eq 0 ] && return 0
+          local -a pids=()
+          local -a logs=()
+          for cmd in "${STAGE[@]}"; do
+            echo "==> Gate: ${cmd}"
+            local log
+            log="$(mktemp)"
+            bash -c "${cmd}" > "${log}" 2>&1 &
+            pids+=("$!")
+            logs+=("${log}")
+          done
+          local i=0
+          for pid in "${pids[@]}"; do
+            if ! wait "${pid}"; then
+              [ -z "${FAILED}" ] && FAILED="${STAGE[$i]}"
+            fi
+            echo "── output: ${STAGE[$i]} ──"
+            cat "${logs[$i]}"
+            i=$((i+1))
+          done
+          STAGE=()
+        }
+
         while IFS= read -r cmd; do
-          [ -z "${cmd}" ] && continue
-          echo "==> Gate: ${cmd}"
-          if ! bash -c "${cmd}"; then FAILED="${cmd}"; break; fi
+          if [ -z "${cmd}" ]; then
+            run_stage
+            [ -n "${FAILED}" ] && break
+            continue
+          fi
+          STAGE+=("${cmd}")
         done <<< "${VERIFY_COMMANDS}"
+        [ -z "${FAILED}" ] && run_stage
 
         post() { gh pr comment "${PR_NUMBER}" --body "$1"; }
 
