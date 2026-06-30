@@ -44,6 +44,16 @@ on:
         type: string
         default: |
           go build ./...
+      format_command:
+        description: >-
+          Optional file-mutating formatter command (e.g. a gofmt/import-order
+          fixer), run once in the fix job after the agent finishes and before
+          the patch is exported — equivalent to v1.3.0's separate mutating
+          stage that ran before the read-only lint/build/test checks. Empty
+          (default) skips this step. Needs base_branch fetched if it diffs
+          against it (handled automatically).
+        type: string
+        default: ""
       context_paths:
         type: string
         default: ""
@@ -81,6 +91,7 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     if: github.event.issue.pull_request != null
+    timeout-minutes: 25
     outputs:
       should_run: ${{ steps.findings.outputs.should_run }}
       pr_number: ${{ steps.pr-info.outputs.pr_number }}
@@ -454,18 +465,31 @@ jobs:
             - Finish with a concise summary of fixed findings, skipped findings, and
               confirmation the verification commands passed.
 
+      - name: Run formatter
+        if: steps.findings.outputs.should_run == 'true' && inputs.format_command != ''
+        shell: bash
+        run: |
+          # v1.3.0's gate ran this as its own mutating stage before the
+          # read-only lint/build/test checks (format first, so they see
+          # formatted code). Same ordering here: after the agent, before the
+          # patch is exported, so any rewrite is captured in fix.patch.
+          git fetch origin "${{ inputs.base_branch }}:${{ inputs.base_branch }}" --force || true
+          ${{ inputs.format_command }}
+
       - name: Export fix as patch artifact
         if: steps.findings.outputs.should_run == 'true'
         shell: bash
         run: |
           # The OpenCode agent action commits its own changes as it works
           # (confirmed: a new commit lands on HEAD during "Run OpenCode
-          # autofix", not just a dirty working tree) — diffing against
-          # base_sha, not `git diff --cached HEAD`, is what actually
-          # captures the fix. `--cached HEAD` was empty because by this
-          # point nothing is staged-but-uncommitted; the agent's commit(s)
-          # already moved HEAD past base_sha.
-          git diff --binary "${{ steps.pr-info.outputs.base_sha }}..HEAD" > fix.patch
+          # autofix", not just a dirty working tree). `git diff <commit>`
+          # (one-sided, no second ref) diffs that commit against the CURRENT
+          # WORKING TREE — captures both the agent's commit(s) AND any
+          # uncommitted formatter rewrite from the step above, regardless of
+          # which one actually committed. `--cached HEAD` (the previous
+          # version) only ever showed staged-but-uncommitted changes, which
+          # was empty once the agent had already committed past base_sha.
+          git diff --binary "${{ steps.pr-info.outputs.base_sha }}" > fix.patch
           echo "patch size: $(wc -l < fix.patch) lines"
 
       - name: Upload fix patch
@@ -490,6 +514,7 @@ jobs:
     needs: fix
     if: needs.fix.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -504,6 +529,17 @@ jobs:
         with:
           go-version-file: ${{ inputs.go_version_file }}
           cache: true
+      # Each verify job runs on its own runner — no access to the fix job's
+      # pre-warmed module cache. If actions/setup-go's go.sum-keyed cache
+      # cold-misses (e.g. after a dependency bump), go/golangci-lint resolve
+      # modules on demand, including private astronautsid/* ones — without
+      # this, that fails outright on a fresh runner.
+      - name: Configure private module access
+        if: inputs.setup_go == 'true'
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.git_token || github.token }}@github.com/".insteadOf \
+            "https://github.com/"
       - name: Cache golangci-lint
         id: lint-cache
         if: inputs.setup_go == 'true'
@@ -534,6 +570,7 @@ jobs:
     needs: fix
     if: needs.fix.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -548,12 +585,19 @@ jobs:
         with:
           go-version-file: ${{ inputs.go_version_file }}
           cache: true
+      - name: Configure private module access
+        if: inputs.setup_go == 'true'
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.git_token || github.token }}@github.com/".insteadOf \
+            "https://github.com/"
       - run: ${{ inputs.verify_build_command }}
 
   test:
     needs: fix
     if: needs.fix.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -568,6 +612,12 @@ jobs:
         with:
           go-version-file: ${{ inputs.go_version_file }}
           cache: true
+      - name: Configure private module access
+        if: inputs.setup_go == 'true'
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.git_token || github.token }}@github.com/".insteadOf \
+            "https://github.com/"
       - run: ${{ inputs.verify_test_command }}
 
   # ── Publish — only reached if lint/build/test all passed ─────────────────
@@ -575,6 +625,7 @@ jobs:
     needs: [fix, lint, build, test]
     if: always() && needs.fix.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:

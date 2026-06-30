@@ -99,6 +99,16 @@ require_in_file "${reusable_workflow}" "git apply"
 require_in_file "${reusable_workflow}" "stage sandbox branch"
 require_in_file "${reusable_workflow}" "checkout -B"
 
+# format_command — mutating-stage equivalent of v1.3.0's lint-gci-new gate
+# stage (a separately staged, file-mutating command, run before the
+# read-only checks). Dropped by accident in the first multi-job draft.
+require_in_file "${reusable_workflow}" "format_command"
+
+# Each verify job needs its own private-module PAT config — split across
+# separate runners, none of them share the fix job's pre-warmed module
+# cache, so a cold go.sum cache miss needs the same insteadOf rewrite.
+require_in_file "${reusable_workflow}" "Configure private module access"
+
 # The toolkit-scripts checkout must stay outside the repo's working tree so
 # the agent's own auto-commit (effectively `git add -A`) can't sweep it up as
 # a gitlink (observed: commit 1a03222be committed `.toolkit` at mode 160000).
