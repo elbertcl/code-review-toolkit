@@ -1,0 +1,598 @@
+name: OpenCode Autofix (reusable)
+
+# Multi-job variant of opencode-autofix/action.yml. Splits the post-fix gate
+# (lint/build/test) across separate runners for genuine parallelism — no
+# single-runner CPU contention. Trade-off vs. the composite action: each
+# verify job pays its own Set up Go + module restore, and the fixer's commit
+# crosses job boundaries via an artifact patch (not a pushed ref) to preserve
+# the "PR's real branch is never touched until verified" property.
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        type: string
+        default: opencode-go/deepseek-v4-pro
+      variant:
+        type: string
+        default: max
+      use_github_token:
+        type: boolean
+        default: false
+      default_severities:
+        type: string
+        default: CRITICAL,HIGH
+      excluded_paths:
+        type: string
+        default: |
+          migrations/
+          script/migrations/
+          *.proto
+          *.pb.go
+          *_mock.go
+          mocks/
+      verify_lint_command:
+        type: string
+        default: golangci-lint run --timeout=10m
+      verify_build_command:
+        type: string
+        default: go build ./...
+      verify_test_command:
+        type: string
+        default: go test ./...
+      self_check_commands:
+        type: string
+        default: |
+          go build ./...
+      context_paths:
+        type: string
+        default: ""
+      extra_prompt:
+        type: string
+        default: ""
+      trusted_only:
+        type: boolean
+        default: true
+      base_branch:
+        type: string
+        default: develop
+      setup_go:
+        type: boolean
+        default: true
+      go_version_file:
+        type: string
+        default: go.mod
+      golangci_lint_version:
+        type: string
+        default: v2.12.2
+      toolkit_ref:
+        description: code-review-toolkit ref to pull scripts/ from (self-checkout, since workflow_call doesn't get github.action_path).
+        type: string
+        default: v2.0.0
+    secrets:
+      opencode_api_key:
+        required: true
+      git_token:
+        required: false
+
+jobs:
+  # ── Trust gate, findings extraction, fixer run — single runner (causally
+  # sequential by nature: each agent step needs the previous tool result) ──
+  fix:
+    runs-on: ubuntu-latest
+    if: github.event.issue.pull_request != null
+    outputs:
+      should_run: ${{ steps.findings.outputs.should_run }}
+      pr_number: ${{ steps.pr-info.outputs.pr_number }}
+      head_ref: ${{ steps.pr-info.outputs.head_ref }}
+      base_sha: ${{ steps.pr-info.outputs.base_sha }}
+      severities: ${{ steps.findings.outputs.severities }}
+    steps:
+      - name: Resolve PR and acknowledge
+        id: pr-info
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueNumber = context.payload.issue.number;
+            const commentId = context.payload.comment.id;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const trustedOnly = '${{ inputs.trusted_only }}' === 'true';
+
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: issueNumber });
+
+            if (trustedOnly) {
+              const commenter = context.payload.comment.user.login;
+              const assoc = context.payload.comment.author_association;
+              const trusted = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+              if (commenter !== pr.user.login && !trusted.includes(assoc)) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issueNumber,
+                  body: `**OpenCode autofix skipped:** \`${commenter}\` is not the PR author or a trusted org member.`
+                });
+                core.setOutput('skip', 'true');
+                return;
+              }
+            }
+
+            await github.rest.reactions.createForIssueComment({ owner, repo, comment_id: commentId, content: 'eyes' });
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: issueNumber,
+              body: `🔧 **OpenCode autofix started** for commit \`${pr.head.sha.slice(0, 7)}\`. [View workflow run](${runUrl})`
+            });
+
+            core.setOutput('skip', 'false');
+            core.setOutput('pr_number', String(issueNumber));
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('base_sha', pr.head.sha);
+
+      - name: Checkout PR branch
+        if: steps.pr-info.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-info.outputs.head_ref }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Checkout toolkit scripts
+        if: steps.pr-info.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: elbertcl/code-review-toolkit
+          ref: ${{ inputs.toolkit_ref }}
+          path: .toolkit
+
+      - name: Prepare scoped findings
+        id: findings
+        if: steps.pr-info.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueNumber = context.payload.issue.number;
+            const rawBody = context.payload.comment.body.trim();
+            const allowed = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']);
+            const defaults = '${{ inputs.default_severities }}'.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+
+            const excludedPatterns = `${{ inputs.excluded_paths }}`.split('\n').map(s => s.trim()).filter(Boolean);
+            function isExcludedPath(path) {
+              return excludedPatterns.some((pat) => {
+                if (pat.startsWith('*')) return path.endsWith(pat.slice(1));
+                if (pat.endsWith('/') && !pat.includes('*')) {
+                  return path.includes(pat) || path.startsWith(pat);
+                }
+                return path.includes(pat);
+              });
+            }
+
+            function parseSeverities(body) {
+              const rest = body.replace(/^\/autofix\b/i, '').trim();
+              if (!rest) return defaults;
+              const parts = rest.split(/[\s,]+/).map(p => p.trim().toUpperCase()).filter(Boolean);
+              if (parts.includes('ALL')) return ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+              const invalid = parts.filter(p => !allowed.has(p));
+              if (invalid.length > 0) throw new Error(`Invalid severity: ${invalid.join(', ')}`);
+              return [...new Set(parts)];
+            }
+
+            function usage() {
+              return [
+                '**OpenCode autofix failed:** invalid severity.',
+                '',
+                'Usage: `/autofix`, `/autofix CRITICAL`, `/autofix HIGH,MEDIUM`, `/autofix ALL`'
+              ].join('\n');
+            }
+
+            function normalizeReviewJsonFinding(f) {
+              const severity = String(f.severity || '').toUpperCase();
+              return {
+                severity,
+                path: String(f.path || ''),
+                line: Number(f.line),
+                body: `[${severity}] ${String(f.title || '').trim()}\n${String(f.body || '').trim()}\nSuggested fix: ${String(f.suggested_fix || '').trim()}`.trim()
+              };
+            }
+            function extractJsonFindings(commentBody) {
+              if (!commentBody.includes('<!-- opencode-pr-review -->')) return [];
+              const m = commentBody.match(/<!-- findings-json-start -->([\s\S]*?)<!-- findings-json-end -->/);
+              if (!m) return [];
+              const parsed = JSON.parse(m[1].trim());
+              if (!Array.isArray(parsed)) throw new Error('Review findings JSON is not an array');
+              return parsed.map(normalizeReviewJsonFinding);
+            }
+            function normalizeInlineFinding(c) {
+              const m = c.body.match(/^\[(CRITICAL|HIGH|MEDIUM|LOW)\]/);
+              if (!m) return null;
+              return { severity: m[1], path: c.path, line: c.line ?? c.original_line, body: c.body };
+            }
+
+            let severities;
+            try {
+              severities = parseSeverities(rawBody);
+            } catch (e) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: usage() });
+              core.setOutput('should_run', 'false');
+              core.setOutput('finding_count', '0');
+              return;
+            }
+            const selected = new Set(severities);
+
+            const issueComments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: issueNumber, per_page: 100
+            });
+            const reviewJsonFindings = [];
+            for (const c of issueComments.reverse()) {
+              if (c.user.login !== 'github-actions[bot]') continue;
+              const f = extractJsonFindings(c.body || '');
+              if (f.length > 0) { reviewJsonFindings.push(...f); break; }
+            }
+
+            const inlineComments = await github.paginate(github.rest.pulls.listReviewComments, {
+              owner, repo, pull_number: issueNumber, per_page: 100
+            });
+            const inlineFindings = inlineComments
+              .filter(c => c.user.login === 'github-actions[bot]')
+              .map(normalizeInlineFinding)
+              .filter(Boolean);
+
+            const all = [...reviewJsonFindings, ...inlineFindings];
+            const eligible = all.filter(f =>
+              selected.has(f.severity) &&
+              Number.isInteger(f.line) && f.line > 0 &&
+              f.path && !isExcludedPath(f.path)
+            );
+
+            fs.writeFileSync('findings_scoped.json', JSON.stringify(eligible, null, 2));
+            core.setOutput('severities', severities.join(','));
+            core.setOutput('finding_count', String(eligible.length));
+            core.setOutput('should_run', eligible.length > 0 ? 'true' : 'false');
+
+            if (eligible.length === 0) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `**OpenCode autofix skipped:** no eligible findings for \`${severities.join(',')}\`. Run \`/review\` first or pick a severity present in the latest review.`
+              });
+            }
+
+      - name: Set up Go
+        if: steps.findings.outputs.should_run == 'true' && inputs.setup_go == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+          cache: true
+
+      - name: Build fixer context
+        if: steps.findings.outputs.should_run == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash .toolkit/scripts/prepare-review-context.sh \
+            "${{ steps.pr-info.outputs.pr_number }}" \
+            "${{ github.repository }}" || echo "::notice::No domain docs context produced (baseline-only)."
+
+          EXTRA_PATHS="${{ inputs.context_paths }}"
+          if [ -n "${EXTRA_PATHS}" ]; then
+            {
+              echo ""
+              echo "## Extra context (context_paths input)"
+              echo ""
+            } >> review_context.md 2>/dev/null || true
+            while IFS= read -r pattern; do
+              [ -z "${pattern}" ] && continue
+              for f in ${pattern}; do
+                [ -f "${f}" ] || continue
+                { echo "### \`${f}\`"; echo '```'; cat "${f}"; echo '```'; echo ""; } >> review_context.md
+              done
+            done <<< "${EXTRA_PATHS}"
+          fi
+
+      - name: Post context summary
+        if: steps.findings.outputs.should_run == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
+          LINE_COUNT=$(wc -l < review_context.md 2>/dev/null | tr -d ' ' || echo 0)
+          DOMAINS=$(grep "^## Domain:" review_context.md 2>/dev/null | sed 's/^## Domain: //' || true)
+          DOMAIN_COUNT=$(echo "$DOMAINS" | grep -c '[^[:space:]]' || true)
+          HAS_RULES=$(grep -cE "^## (AGENTS|CLAUDE)\.md" review_context.md 2>/dev/null || true)
+          HAS_CROSS=$(grep -c "^## Cross-domain invariants" review_context.md 2>/dev/null || true)
+
+          ROWS=""
+          while IFS= read -r domain; do
+            [ -z "$domain" ] && continue
+            INV=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Invariants" || true)
+            ARCH=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Architecture" || true)
+            SPEC=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Testspecs" || true)
+            ROWS="${ROWS}| \`${domain}\` | $([ "$INV" -gt 0 ] && echo "✅" || echo "—") | $([ "$ARCH" -gt 0 ] && echo "✅" || echo "—") | $([ "$SPEC" -gt 0 ] && echo "✅" || echo "—") |\n"
+          done <<< "$DOMAINS"
+
+          BASELINE=""
+          [ "$HAS_RULES" -gt 0 ] && BASELINE="Repository rules ✅"
+          [ "$HAS_CROSS" -gt 0 ] && BASELINE="${BASELINE} · Cross-domain invariants ✅"
+          [ -z "$BASELINE" ] && BASELINE="⚠️ No baseline docs found"
+
+          if [ "$DOMAIN_COUNT" -eq 0 ]; then
+            DOMAIN_SECTION="⚠️ **No domains detected** — only baseline context was loaded. Autofix may lack domain-specific invariants and testspecs."
+          else
+            DOMAIN_SECTION="$(printf "| Domain | Invariants | Architecture | Testspecs |\n|---|---|---|---|\n%b" "$ROWS")"
+          fi
+
+          gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Autofix context loaded** — %s lines · %s domain(s)\n\n%s\n\n> %s' "$LINE_COUNT" "$DOMAIN_COUNT" "$DOMAIN_SECTION" "$BASELINE")"
+
+      - name: Configure private module access and git identity
+        if: steps.findings.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.git_token || github.token }}@github.com/".insteadOf \
+            "https://github.com/"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Pre-warm Go modules and drop private module token
+        if: steps.findings.outputs.should_run == 'true' && inputs.setup_go == 'true'
+        shell: bash
+        run: |
+          go mod download || true
+          git config --global --unset \
+            url."https://x-access-token:${{ secrets.git_token || github.token }}@github.com/".insteadOf || true
+
+      - name: Run OpenCode autofix
+        if: steps.findings.outputs.should_run == 'true'
+        uses: anomalyco/opencode/github@v1.17.6
+        env:
+          OPENCODE_API_KEY: ${{ secrets.opencode_api_key }}
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          model: ${{ inputs.model }}
+          variant: ${{ inputs.variant }}
+          mentions: /autofix
+          share: "false"
+          use_github_token: ${{ inputs.use_github_token }}
+          prompt: |
+            You are applying scoped PR review autofixes.
+
+            Required first step:
+            - Read findings_scoped.json.
+            - If review_context.md exists, read it next — it holds repository coding
+              standards (AGENTS.md/CLAUDE.md), cross-domain invariants, and per-domain
+              RULE-XXX invariants/testspecs. Every fix MUST respect these invariants,
+              even ones not directly cited in the finding.
+
+            Scope rules:
+            - Fix only findings listed in findings_scoped.json. Edit only those files.
+            - Do not edit migrations, generated protobuf, generated mocks, or files
+              outside the findings list.
+            - Do not create, modify, or commit findings_scoped.json or review_context.md
+              in the final diff.
+            - Do not run git push yourself. The Action handles publishing.
+
+            Interface safety:
+            - Before changing a function call or its arguments, read the relevant
+              interface file to confirm argument types, count, and positions.
+            - If a suggested fix has type mismatches, derive the correct code from intent
+              rather than copying verbatim.
+            - If a fix would require changing an interface signature, skip it and record
+              it in autofix_skipped.json with reason: "requires interface change."
+
+            Coupled-finding detection:
+            - Before a structural fix (e.g. moving a DB call out of a loop), check whether
+              another finding addresses the same call/variable. If that companion finding
+              is being skipped, skip the whole coupled group and record all of them in
+              autofix_skipped.json explaining the dependency.
+
+            Dead-call prevention:
+            - After applying fixes, scan for `_ = <expr>` where the RHS is a repository/DB
+              call. If your change introduced or left one, revert that fix and record it in
+              autofix_skipped.json with reason: "partial fix would leave a dead DB call —
+              companion fix must be applied together."
+
+            autofix_skipped.json:
+            - After processing all findings, write a JSON array of ALL findings you did
+              NOT apply (excluding already-fixed ones):
+              [{"path":"...","line":<number or null>,"body":"<first line>","reason":"<one sentence>"}]
+            - If nothing was skipped, write an empty array: []
+
+            Repository rules:
+            - Follow AGENTS.md. Keep changes minimal and localized.
+            - Do not change public interfaces unless the finding explicitly requires it and
+              the existing code proves it is safe.
+            ${{ inputs.extra_prompt }}
+
+            Verification loop (cheap self-check only — separate jobs re-verify
+            independently afterward with the full lint/build/test suite and are the
+            sole authority on publish):
+            - Run these commands in order; if any fails, fix the minimal issue inside the
+              scoped files and restart from the first command (max 3 cycles):
+            ${{ inputs.self_check_commands }}
+            - If a lint/format command rewrites files, keep those changes and restart.
+
+            Failure behavior:
+            - If verification still fails after 3 cycles, run `git restore .` and
+              `git clean -fd` so no autofix changes remain, then finish with a clear failure
+              response naming the failing command and the findings that need manual work.
+
+            Success behavior:
+            - Before finishing, remove findings_scoped.json and review_context.md if present.
+            - Leave the source + any formatting changes in the working tree, but do not
+              commit them — the Action exports the diff as a patch artifact.
+            - Finish with a concise summary of fixed findings, skipped findings, and
+              confirmation the verification commands passed.
+
+      - name: Export fix as patch artifact
+        if: steps.findings.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          git add -A
+          git diff --cached --binary HEAD > fix.patch
+          echo "patch size: $(wc -l < fix.patch) lines"
+
+      - name: Upload fix patch
+        if: steps.findings.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: autofix-patch-${{ github.run_id }}
+          path: fix.patch
+          retention-days: 1
+
+      - name: Post failure comment
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ steps.pr-info.outputs.pr_number || github.event.issue.number }}" \
+            --body "**OpenCode autofix failed unexpectedly.** Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true
+
+  # ── Independent verify jobs — separate runners, no shared CPU/contention ──
+  lint:
+    needs: fix
+    if: needs.fix.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.fix.outputs.head_ref }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: autofix-patch-${{ github.run_id }}
+      - run: git apply --binary fix.patch
+      - uses: actions/setup-go@v5
+        if: inputs.setup_go == 'true'
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+          cache: true
+      - name: Cache golangci-lint
+        id: lint-cache
+        if: inputs.setup_go == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin/golangci-lint
+          key: golangci-lint-${{ inputs.golangci_lint_version }}-${{ runner.os }}
+      - name: Cache golangci-lint analysis
+        if: inputs.setup_go == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-lint-analysis-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            golangci-lint-analysis-${{ runner.os }}-
+      - name: Install golangci-lint and fetch base branch
+        if: inputs.setup_go == 'true'
+        run: |
+          if [ "${{ steps.lint-cache.outputs.cache-hit }}" != "true" ]; then
+            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+              | sh -s -- -b "$(go env GOPATH)/bin" "${{ inputs.golangci_lint_version }}"
+          fi
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          git fetch origin "${{ inputs.base_branch }}:${{ inputs.base_branch }}" --force || true
+      - run: ${{ inputs.verify_lint_command }}
+
+  build:
+    needs: fix
+    if: needs.fix.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.fix.outputs.head_ref }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: autofix-patch-${{ github.run_id }}
+      - run: git apply --binary fix.patch
+      - uses: actions/setup-go@v5
+        if: inputs.setup_go == 'true'
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+          cache: true
+      - run: ${{ inputs.verify_build_command }}
+
+  test:
+    needs: fix
+    if: needs.fix.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.fix.outputs.head_ref }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: autofix-patch-${{ github.run_id }}
+      - run: git apply --binary fix.patch
+      - uses: actions/setup-go@v5
+        if: inputs.setup_go == 'true'
+        with:
+          go-version-file: ${{ inputs.go_version_file }}
+          cache: true
+      - run: ${{ inputs.verify_test_command }}
+
+  # ── Publish — only reached if lint/build/test all passed ─────────────────
+  publish:
+    needs: [fix, lint, build, test]
+    if: always() && needs.fix.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.fix.outputs.head_ref }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Check gate results
+        id: gate
+        run: |
+          if [ "${{ needs.lint.result }}" != "success" ] || \
+             [ "${{ needs.build.result }}" != "success" ] || \
+             [ "${{ needs.test.result }}" != "success" ]; then
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.gate.outputs.passed == 'true'
+        with:
+          name: autofix-patch-${{ github.run_id }}
+
+      - name: Apply, commit, publish
+        if: steps.gate.outputs.passed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.git_token || github.token }}
+          PR_NUMBER: ${{ needs.fix.outputs.pr_number }}
+          HEAD_REF: ${{ needs.fix.outputs.head_ref }}
+          SEVERITIES: ${{ needs.fix.outputs.severities }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git apply --binary fix.patch
+          git add -A
+          git commit -m "OpenCode autofix: ${SEVERITIES} fixes applied, all checks pass"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if ! git push --force-with-lease origin "HEAD:refs/heads/${HEAD_REF}"; then
+            gh pr comment "${PR_NUMBER}" --body "**OpenCode autofix gate passed but publish was rejected:** \`${HEAD_REF}\` moved during this run (concurrent push?). The verified fix was NOT published — please rerun \`/autofix\`."
+            exit 1
+          fi
+          gh pr comment "${PR_NUMBER}" --body "$(printf '## OpenCode Autofix Applied\n\nSeverities targeted: `%s`\n\nVerification gates passed (lint, build, test — run in parallel).' "${SEVERITIES}")"
+
+      - name: Report gate failure
+        if: steps.gate.outputs.passed == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.fix.outputs.pr_number }}
+        run: |
+          FAILED=""
+          [ "${{ needs.lint.result }}" != "success" ] && FAILED="${FAILED} lint"
+          [ "${{ needs.build.result }}" != "success" ] && FAILED="${FAILED} build"
+          [ "${{ needs.test.result }}" != "success" ] && FAILED="${FAILED} test"
+          gh pr comment "${PR_NUMBER}" --body "**OpenCode autofix did not apply:**${FAILED} failed during verification. The PR branch was never touched — please apply these findings manually."

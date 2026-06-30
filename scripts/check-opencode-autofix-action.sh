@@ -70,3 +70,38 @@ require_in_file "${context_script}" "findings_scoped.json"
 require_in_file "${context_script}" "autofix_skipped.json"
 
 printf 'OpenCode autofix action contract is satisfied.\n'
+
+# ── Reusable workflow (multi-job variant) ──────────────────────────────────────
+reusable_workflow=".github/workflows/opencode-autofix.yml"
+
+require_in_file "${reusable_workflow}" "workflow_call"
+require_in_file "${reusable_workflow}" "anomalyco/opencode/github@v1.17.6"
+
+# Job graph: fix -> {lint, build, test} -> publish.
+for job in "  fix:" "  lint:" "  build:" "  test:" "  publish:"; do
+  require_in_file "${reusable_workflow}" "${job}"
+done
+require_in_file "${reusable_workflow}" "needs: fix"
+require_in_file "${reusable_workflow}" "needs: [fix, lint, build, test]"
+
+# Artifact-based handoff, not a pushed ref — verify jobs never touch origin
+# before the publish job's gate-checked push.
+require_in_file "${reusable_workflow}" "upload-artifact"
+require_in_file "${reusable_workflow}" "download-artifact"
+require_in_file "${reusable_workflow}" "git apply"
+if grep -E "^\s*-?\s*name: .*[Ss]andbox" "${reusable_workflow}" >/dev/null 2>&1; then
+  printf 'expected %s to use artifact handoff, not a pushed sandbox branch\n' "${reusable_workflow}" >&2
+  exit 1
+fi
+
+# Trust gate + author-filtered findings still apply in the multi-job variant.
+require_in_file "${reusable_workflow}" "trusted_only"
+require_in_file "${reusable_workflow}" "github-actions[bot]"
+require_in_file "${reusable_workflow}" "force-with-lease"
+
+# Publish only proceeds if all three verify jobs succeeded.
+require_in_file "${reusable_workflow}" "needs.lint.result"
+require_in_file "${reusable_workflow}" "needs.build.result"
+require_in_file "${reusable_workflow}" "needs.test.result"
+
+printf 'OpenCode autofix reusable workflow contract is satisfied.\n'
