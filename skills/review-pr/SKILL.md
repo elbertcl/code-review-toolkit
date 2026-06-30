@@ -127,6 +127,8 @@ EOF
 
 **Step 2 — Batch all findings in a single API call:**
 
+**ALL findings of every severity (CRITICAL, HIGH, MEDIUM, LOW) MUST be posted as inline comments.** No severity level is excluded from inline posting. Only findings whose file is absent from the PR diff or whose line falls outside all diff hunks may be relegated to the summary — severity alone is never a reason to skip inline posting.
+
 First, get the commit SHA:
 ```bash
 gh pr view <PR_URL> --json headRefOid --jq '.headRefOid'
@@ -263,9 +265,16 @@ gh pr comment <PR_URL> --body "$(cat <<'EOF'
   Author's position: "<summary of dispute>"
 (omit section if empty)
 
+### Additional Findings (do not block merge)
+| Severity | Summary | File:Line | Thread |
+|---|---|---|---|
+| 🟡 MEDIUM | <1-line summary> | `path/to/file.go:123` | <GitHub comment URL> |
+| 🔵 LOW | <1-line summary> | `path/to/file.go:456` | <GitHub comment URL> |
+(omit section if no MEDIUM/LOW findings)
+
 ### Progress
 - X CRITICAL/HIGH threads posted
-- Y MEDIUM/LOW threads (do not block merge)
+- Y MEDIUM/LOW threads posted
 
 ### Next Action
 [NEEDS FIX]
