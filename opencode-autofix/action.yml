@@ -62,7 +62,7 @@ inputs:
       see a half-written file.
     required: false
     default: |
-      make build
+      go build ./...
   self_check_commands:
     description: >-
       Newline-separated cheap commands the fixer runs in its own self-verify
@@ -72,7 +72,7 @@ inputs:
       trusted on its own.
     required: false
     default: |
-      make build
+      go build ./...
   context_paths:
     description: >-
       Newline-separated extra doc files/globs appended to fixer context for repos
