@@ -136,13 +136,20 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      # Checked out as a SIBLING of GITHUB_WORKSPACE, not nested inside it —
+      # the agent's own auto-commit (it commits its changes as it works, see
+      # "Export fix as patch artifact" below) does the equivalent of `git add
+      # -A`. A nested .toolkit/.git previously got swept up as a gitlink
+      # (mode 160000) in that commit (observed on astro-ads-be PR #733,
+      # commit 1a03222be) — keeping it outside the repo tree entirely is the
+      # only fix that doesn't depend on the agent behaving.
       - name: Checkout toolkit scripts
         if: steps.pr-info.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           repository: elbertcl/code-review-toolkit
           ref: ${{ inputs.toolkit_ref }}
-          path: .toolkit
+          path: ../opencode-toolkit-scripts
 
       - name: Prepare scoped findings
         id: findings
@@ -272,7 +279,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash .toolkit/scripts/prepare-review-context.sh \
+          bash ../opencode-toolkit-scripts/scripts/prepare-review-context.sh \
             "${{ steps.pr-info.outputs.pr_number }}" \
             "${{ github.repository }}" || echo "::notice::No domain docs context produced (baseline-only)."
 
@@ -344,6 +351,26 @@ jobs:
           go mod download || true
           git config --global --unset \
             url."https://x-access-token:${{ secrets.git_token || github.token }}@github.com/".insteadOf || true
+
+      # ── Stage a local-only sandbox branch ────────────────────────────────
+      # Critical: the agent commits as it works (confirmed — see "Export fix
+      # as patch artifact" below) and the upstream anomalyco/opencode/github
+      # action may push on its own. Checking out head_ref directly (as this
+      # job's earlier "Checkout PR branch" step does) means any such push
+      # lands straight on the PR's real branch, bypassing lint/build/test
+      # entirely — this is exactly what happened on astro-ads-be PR #733,
+      # commit 1a03222be, landing despite all three verify jobs failing.
+      # Renaming the local branch to one with no upstream tracking (never
+      # pushed by this step) is what made the original composite action
+      # safe; this reproduces that property here.
+      - name: Capture base and stage sandbox branch
+        id: sandbox
+        if: steps.findings.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          SANDBOX="autofix/pr-${{ steps.pr-info.outputs.pr_number }}-${{ github.run_id }}"
+          git checkout -B "${SANDBOX}" "origin/${{ steps.pr-info.outputs.head_ref }}"
+          echo "sandbox=${SANDBOX}" >> "$GITHUB_OUTPUT"
 
       - name: Run OpenCode autofix
         if: steps.findings.outputs.should_run == 'true'

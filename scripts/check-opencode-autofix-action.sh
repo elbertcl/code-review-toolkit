@@ -84,13 +84,26 @@ done
 require_in_file "${reusable_workflow}" "needs: fix"
 require_in_file "${reusable_workflow}" "needs: [fix, lint, build, test]"
 
-# Artifact-based handoff, not a pushed ref — verify jobs never touch origin
+# Artifact-based handoff between jobs — verify jobs never touch origin
 # before the publish job's gate-checked push.
 require_in_file "${reusable_workflow}" "upload-artifact"
 require_in_file "${reusable_workflow}" "download-artifact"
 require_in_file "${reusable_workflow}" "git apply"
-if grep -E "^\s*-?\s*name: .*[Ss]andbox" "${reusable_workflow}" >/dev/null 2>&1; then
-  printf 'expected %s to use artifact handoff, not a pushed sandbox branch\n' "${reusable_workflow}" >&2
+
+# The fix job MUST still stage a local-only sandbox branch before running the
+# agent — checking out head_ref directly let an agent-initiated push land on
+# the PR's real branch, bypassing the gate entirely (astro-ads-be PR #733,
+# commit 1a03222be). Artifact handoff solves cross-JOB data transfer; it does
+# NOT solve the agent pushing on its own from inside the fix job — only branch
+# isolation does that.
+require_in_file "${reusable_workflow}" "stage sandbox branch"
+require_in_file "${reusable_workflow}" "checkout -B"
+
+# The toolkit-scripts checkout must stay outside the repo's working tree so
+# the agent's own auto-commit (effectively `git add -A`) can't sweep it up as
+# a gitlink (observed: commit 1a03222be committed `.toolkit` at mode 160000).
+if grep -E "path: \.toolkit\b" "${reusable_workflow}" >/dev/null 2>&1; then
+  printf 'expected %s to checkout toolkit scripts outside the repo tree, not into .toolkit\n' "${reusable_workflow}" >&2
   exit 1
 fi
 
