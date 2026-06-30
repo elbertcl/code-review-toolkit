@@ -57,8 +57,8 @@ on:
         type: string
         default: develop
       setup_go:
-        type: boolean
-        default: true
+        type: string
+        default: "true"
       go_version_file:
         type: string
         default: go.mod
@@ -431,8 +431,14 @@ jobs:
         if: steps.findings.outputs.should_run == 'true'
         shell: bash
         run: |
-          git add -A
-          git diff --cached --binary HEAD > fix.patch
+          # The OpenCode agent action commits its own changes as it works
+          # (confirmed: a new commit lands on HEAD during "Run OpenCode
+          # autofix", not just a dirty working tree) — diffing against
+          # base_sha, not `git diff --cached HEAD`, is what actually
+          # captures the fix. `--cached HEAD` was empty because by this
+          # point nothing is staged-but-uncommitted; the agent's commit(s)
+          # already moved HEAD past base_sha.
+          git diff --binary "${{ steps.pr-info.outputs.base_sha }}..HEAD" > fix.patch
           echo "patch size: $(wc -l < fix.patch) lines"
 
       - name: Upload fix patch
