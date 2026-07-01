@@ -364,17 +364,15 @@ jobs:
           git config --global --unset \
             url."https://x-access-token:${{ secrets.git_token || github.token }}@github.com/".insteadOf || true
 
-      # ── Stage a local-only sandbox branch ────────────────────────────────
-      # Critical: the agent commits as it works (confirmed — see "Export fix
-      # as patch artifact" below) and the upstream anomalyco/opencode/github
-      # action may push on its own. Checking out head_ref directly (as this
-      # job's earlier "Checkout PR branch" step does) means any such push
-      # lands straight on the PR's real branch, bypassing lint/build/test
-      # entirely — this is exactly what happened on astro-ads-be PR #733,
-      # commit 1a03222be, landing despite all three verify jobs failing.
-      # Renaming the local branch to one with no upstream tracking (never
-      # pushed by this step) is what made the original composite action
-      # safe; this reproduces that property here.
+      # ── Stage a local-only sandbox branch (defense-in-depth) ──────────────
+      # The real guarantee that the PR branch is untouched before verification
+      # is now the HEADLESS `opencode run` below — it performs no git push at
+      # all. This rename to a no-upstream local branch is kept only as a cheap
+      # second layer: if any tool tries to push HEAD, it has no tracking ref to
+      # land on. NOTE: the earlier belief that this rename ALONE stopped the
+      # push was wrong — `opencode github run` pushed by PR head-ref NAME
+      # regardless of the local branch (astro-ads-be PR #733, commit 15583f9,
+      # landed while all three verify jobs failed). Headless mode is the fix.
       - name: Capture base and stage sandbox branch
         id: sandbox
         if: steps.findings.outputs.should_run == 'true'
@@ -384,19 +382,39 @@ jobs:
           git checkout -B "${SANDBOX}" "origin/${{ steps.pr-info.outputs.head_ref }}"
           echo "sandbox=${SANDBOX}" >> "$GITHUB_OUTPUT"
 
-      - name: Run OpenCode autofix
+      - name: Install opencode
         if: steps.findings.outputs.should_run == 'true'
-        uses: anomalyco/opencode/github@v1.17.6
+        shell: bash
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      # Headless `opencode run` — deliberately NOT anomalyco/opencode/github.
+      # That action runs `opencode github run`, which resolves the PR from the
+      # issue_comment event and pushes its commit straight to the PR head ref BY
+      # NAME, ignoring whatever branch is checked out — so the sandbox checkout
+      # above cannot stop it (astro-ads-be PR #733, commit 15583f9: pushed onto
+      # the branch while all three verify jobs failed and publish reported
+      # "never touched"). Headless `run` only mutates the working tree; the diff
+      # is exported as a patch and published SOLELY by the gated publish job.
+      - name: Run OpenCode autofix (headless)
+        if: steps.findings.outputs.should_run == 'true'
+        shell: bash
         env:
           OPENCODE_API_KEY: ${{ secrets.opencode_api_key }}
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          model: ${{ inputs.model }}
-          variant: ${{ inputs.variant }}
-          mentions: /autofix
-          share: "false"
-          use_github_token: ${{ inputs.use_github_token }}
-          prompt: |
+        run: |
+          # Non-interactive run cannot answer permission prompts — grant edit +
+          # bash via global config (merges under the repo's own .opencode config,
+          # which supplies AGENTS.md instructions and skills).
+          mkdir -p "$HOME/.config/opencode"
+          cat > "$HOME/.config/opencode/opencode.json" <<'OPENCODE_JSON'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny" }
+          }
+          OPENCODE_JSON
+
+          cat > "$RUNNER_TEMP/autofix_prompt.md" <<'PROMPT_EOF'
             You are applying scoped PR review autofixes.
 
             Required first step:
@@ -465,6 +483,9 @@ jobs:
               commit them — the Action exports the diff as a patch artifact.
             - Finish with a concise summary of fixed findings, skipped findings, and
               confirmation the verification commands passed.
+          PROMPT_EOF
+
+          opencode run --agent build -m "${{ inputs.model }}" < "$RUNNER_TEMP/autofix_prompt.md"
 
       - name: Run formatter
         if: steps.findings.outputs.should_run == 'true' && inputs.format_command != ''
