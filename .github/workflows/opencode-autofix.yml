@@ -98,6 +98,7 @@ jobs:
       head_ref: ${{ steps.pr-info.outputs.head_ref }}
       base_sha: ${{ steps.pr-info.outputs.base_sha }}
       severities: ${{ steps.findings.outputs.severities }}
+      patch_empty: ${{ steps.export.outputs.patch_empty }}
     steps:
       - name: Resolve PR and acknowledge
         id: pr-info
@@ -477,6 +478,7 @@ jobs:
           ${{ inputs.format_command }}
 
       - name: Export fix as patch artifact
+        id: export
         if: steps.findings.outputs.should_run == 'true'
         shell: bash
         run: |
@@ -491,6 +493,16 @@ jobs:
           # was empty once the agent had already committed past base_sha.
           git diff --binary "${{ steps.pr-info.outputs.base_sha }}" > fix.patch
           echo "patch size: $(wc -l < fix.patch) lines"
+          # A legitimate zero-line patch happens when the agent finds all
+          # scoped findings already fixed in source (e.g. superseded by a
+          # later commit). `git apply` rejects an empty file as "No valid
+          # patches in input", so downstream jobs must skip applying rather
+          # than treat this as a verification failure.
+          if [ -s fix.patch ]; then
+            echo "patch_empty=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "patch_empty=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Upload fix patch
         if: steps.findings.outputs.should_run == 'true'
@@ -512,7 +524,7 @@ jobs:
   # ── Independent verify jobs — separate runners, no shared CPU/contention ──
   lint:
     needs: fix
-    if: needs.fix.outputs.should_run == 'true'
+    if: needs.fix.outputs.should_run == 'true' && needs.fix.outputs.patch_empty != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -568,7 +580,7 @@ jobs:
 
   build:
     needs: fix
-    if: needs.fix.outputs.should_run == 'true'
+    if: needs.fix.outputs.should_run == 'true' && needs.fix.outputs.patch_empty != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -595,7 +607,7 @@ jobs:
 
   test:
     needs: fix
-    if: needs.fix.outputs.should_run == 'true'
+    if: needs.fix.outputs.should_run == 'true' && needs.fix.outputs.patch_empty != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -636,7 +648,9 @@ jobs:
       - name: Check gate results
         id: gate
         run: |
-          if [ "${{ needs.lint.result }}" != "success" ] || \
+          if [ "${{ needs.fix.outputs.patch_empty }}" == "true" ]; then
+            echo "passed=empty" >> "$GITHUB_OUTPUT"
+          elif [ "${{ needs.lint.result }}" != "success" ] || \
              [ "${{ needs.build.result }}" != "success" ] || \
              [ "${{ needs.test.result }}" != "success" ]; then
             echo "passed=false" >> "$GITHUB_OUTPUT"
@@ -680,3 +694,12 @@ jobs:
           [ "${{ needs.build.result }}" != "success" ] && FAILED="${FAILED} build"
           [ "${{ needs.test.result }}" != "success" ] && FAILED="${FAILED} test"
           gh pr comment "${PR_NUMBER}" --body "**OpenCode autofix did not apply:**${FAILED} failed during verification. The PR branch was never touched — please apply these findings manually."
+
+      - name: Report no changes needed
+        if: steps.gate.outputs.passed == 'empty'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.fix.outputs.pr_number }}
+          SEVERITIES: ${{ needs.fix.outputs.severities }}
+        run: |
+          gh pr comment "${PR_NUMBER}" --body "$(printf '**OpenCode autofix: no changes needed.** All scoped `%s` findings were already fixed in the source. The PR branch was not touched.' "${SEVERITIES}")"
