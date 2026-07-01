@@ -156,11 +156,11 @@ jobs:
       # only fix that doesn't depend on the agent behaving.
       - name: Checkout toolkit scripts
         if: steps.pr-info.outputs.skip != 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: elbertcl/code-review-toolkit
-          ref: ${{ inputs.toolkit_ref }}
-          path: ../opencode-toolkit-scripts
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "${{ inputs.toolkit_ref }}" \
+            "https://github.com/elbertcl/code-review-toolkit" \
+            "${{ runner.temp }}/opencode-toolkit-scripts"
 
       - name: Prepare scoped findings
         id: findings
@@ -290,7 +290,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bash ../opencode-toolkit-scripts/scripts/prepare-review-context.sh \
+          bash "${{ runner.temp }}/opencode-toolkit-scripts/scripts/prepare-review-context.sh" \
             "${{ steps.pr-info.outputs.pr_number }}" \
             "${{ github.repository }}" || echo "::notice::No domain docs context produced (baseline-only)."
 
