@@ -307,12 +307,14 @@ runs:
         cp "${{ github.action_path }}/../skills/review-pr/SKILL.md" .opencode/review-pr.base.md
         cp "${{ github.action_path }}/../skills/re-review-pr/SKILL.md" .opencode/re-review-pr.base.md
 
-        cat > .opencode/review-pr.instructions.md <<'EOF'
+        cat > .opencode/review-pr.instructions.md <<EOF
         OpenCode additions:
-        1. Return the final PR verdict as your final response. Do NOT call `gh pr comment` for the verdict; this Action posts it.
-        2. All inline comments must still be posted via GitHub API exactly as the base skill instructs.
-        3. Append this exact structured block to the final verdict:
+        1. OVERRIDE of base skill Phase 4 Step 1: do NOT call \`gh pr comment\` yourself for the verdict, under any circumstance, even though the base skill instructs it. This Action posts your final response as the PR comment automatically. Calling \`gh pr comment\` yourself in addition to returning a final response produces two separate, incomplete comments and breaks the review-completion loop guard.
+        2. Return the ENTIRE PR verdict (all sections from the base skill's Phase 4 template) as your single final response — this is the ONLY place the verdict is emitted. Base skill Phase 4 Step 2 ("output the same verdict to the conversation") still applies.
+        3. All inline comments must still be posted via GitHub API exactly as the base skill instructs.
+        4. Terminate your final response with the following lines, in this exact order, immediately adjacent with no other content between them:
 
+        <!-- reviewed-head: ${{ steps.pr-info.outputs.head_sha }} -->
         <!-- opencode-pr-review -->
         <!-- findings-json-start
         [
@@ -327,17 +329,19 @@ runs:
         ]
         findings-json-end -->
 
-        4. Every finding posted inline MUST appear in this JSON array. If there are no findings, emit `[]`.
-        5. Each finding MUST include `suggested_fix` with a concrete actionable fix in 1-2 sentences.
-        6. Comment-only mode: do not edit repository files, do not create patches, do not run formatters, and do not run any git write operations (`git add`, `git commit`, `git push`, `git checkout -b`, `git merge`, `git rebase`). Output must be PR comments only.
-        7. For any scratch files or temporary payloads, use workspace-local paths under `.opencode/tmp/`. Never read from or write to `/tmp` or any path outside the repository checkout.
+        5. Every finding posted inline MUST appear in this JSON array. If there are no findings, emit \`[]\`.
+        6. Each finding MUST include \`suggested_fix\` with a concrete actionable fix in 1-2 sentences.
+        7. Comment-only mode: do not edit repository files, do not create patches, do not run formatters, and do not run any git write operations (\`git add\`, \`git commit\`, \`git push\`, \`git checkout -b\`, \`git merge\`, \`git rebase\`). Output must be PR comments only.
+        8. For any scratch files or temporary payloads, use workspace-local paths under \`.opencode/tmp/\`. Never read from or write to \`/tmp\` or any path outside the repository checkout.
         EOF
 
-        cat > .opencode/re-review-pr.instructions.md <<'EOF'
+        cat > .opencode/re-review-pr.instructions.md <<EOF
         OpenCode additions:
-        1. Return the final PR verdict as your final response. Do NOT call `gh pr comment` for the verdict; this Action posts it.
-        2. Append this exact structured block to the final verdict:
+        1. OVERRIDE of base skill Phase 4 Step 1: do NOT call \`gh pr comment\` yourself for the verdict, under any circumstance, even though the base skill instructs it. This Action posts your final response as the PR comment automatically. Calling \`gh pr comment\` yourself in addition to returning a final response produces two separate, incomplete comments and breaks the review-completion loop guard.
+        2. Return the ENTIRE PR verdict as your single final response — this is the ONLY place the verdict is emitted.
+        3. Terminate your final response with the following lines, in this exact order, immediately adjacent with no other content between them:
 
+        <!-- reviewed-head: ${{ steps.pr-info.outputs.head_sha }} -->
         <!-- opencode-pr-review -->
         <!-- findings-json-start
         [
@@ -352,10 +356,10 @@ runs:
         ]
         findings-json-end -->
 
-        3. Include ALL new findings from re-review in this JSON array. If there are no findings, emit `[]`.
-        4. Each finding MUST include `suggested_fix`.
-        5. Comment-only mode: do not edit repository files, do not create patches, and do not run any git write operations (`git add`, `git commit`, `git push`, `git checkout -b`, `git merge`, `git rebase`). Output must be PR comments only.
-        6. For any scratch files or temporary payloads, use workspace-local paths under `.opencode/tmp/`. Never read from or write to `/tmp` or any path outside the repository checkout.
+        4. Include ALL new findings from re-review in this JSON array. If there are no findings, emit \`[]\`.
+        5. Each finding MUST include \`suggested_fix\`.
+        6. Comment-only mode: do not edit repository files, do not create patches, and do not run any git write operations (\`git add\`, \`git commit\`, \`git push\`, \`git checkout -b\`, \`git merge\`, \`git rebase\`). Output must be PR comments only.
+        7. For any scratch files or temporary payloads, use workspace-local paths under \`.opencode/tmp/\`. Never read from or write to \`/tmp\` or any path outside the repository checkout.
         EOF
 
         cat .opencode/review-pr.base.md .opencode/review-pr.instructions.md > .opencode/review-pr.opencode.md
