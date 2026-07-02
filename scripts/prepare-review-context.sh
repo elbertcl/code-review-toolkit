@@ -31,10 +31,17 @@
 #   - cross-domain.md invariants — if present
 #   - Per-domain: invariants, architecture doc, repository interface,
 #     entity files, testspecs
+#   - Per-domain: existing function signatures under internal/domain/{domain}/
+#     (for reuse-check — lets the review agent spot near-duplicate funcs
+#     without grepping the codebase per finding)
+#   - Once, repo-wide: existing function signatures under pkg/* (shared
+#     utilities — same reuse-check purpose, bounded to pkg/ only)
 #
 # What is NOT included:
 #   - PR diff (already in context from gh pr diff in the workflow)
 #   - Test files (*_test.go)
+#   - Function bodies for the signature list above — signatures only, to
+#     keep review_context.md size bounded
 
 set -euo pipefail
 
@@ -133,6 +140,7 @@ Read this file instead of reading these files individually.
 - Read this file at the start of your review instead of reading these files individually.
 - Use `Read`/`Grep` only for files NOT already covered here.
 - Testspecs below are for **Business Correctness (Section 1) only**.
+- Function signature lists below (per-domain and `pkg/`) are for **Maintainability reuse-check only** — check new funcs/vars in the diff against these lists before flagging them as genuinely new. Signatures only, no bodies; `Read` the actual file if a candidate match needs closer comparison.
 
 ---
 
@@ -242,6 +250,20 @@ for domain in "${TOUCHED_DOMAINS[@]}"; do
     echo "" >> "$OUT"
   fi
 
+  # Existing function signatures (for reuse-check) — signatures only, no bodies
+  domain_dir="internal/domain/${domain}"
+  if [ -d "$domain_dir" ]; then
+    echo "### Existing function signatures in \`${domain_dir}/\` (for reuse-check)" >> "$OUT"
+    echo "" >> "$OUT"
+    echo '```' >> "$OUT"
+    find "$domain_dir" -type f -name '*.go' \
+      ! -name '*_test.go' ! -name '*.pb.go' ! -name '*_mock.go' ! -name 'mock_*.go' \
+      ! -path '*/mocks/*' ! -path '*/mock/*' -print0 \
+      | xargs -0 grep -Hn "^func " -- >> "$OUT" || true
+    echo '```' >> "$OUT"
+    echo "" >> "$OUT"
+  fi
+
   # Testspecs
   testspec_dir="docs/testspecs/${domain}"
   if [ -d "$testspec_dir" ]; then
@@ -259,6 +281,21 @@ for domain in "${TOUCHED_DOMAINS[@]}"; do
   echo "---" >> "$OUT"
   echo "" >> "$OUT"
 done
+
+# ── Shared pkg/ function signatures (for reuse-check, once — not per-domain) ─
+if [ -d "pkg" ]; then
+  echo "## Existing function signatures in \`pkg/\` (shared utilities, for reuse-check)" >> "$OUT"
+  echo "" >> "$OUT"
+  echo '```' >> "$OUT"
+  find "pkg" -type f -name '*.go' \
+    ! -name '*_test.go' ! -name '*.pb.go' ! -name '*_mock.go' ! -name 'mock_*.go' \
+    ! -path '*/mocks/*' ! -path '*/mock/*' -print0 \
+    | xargs -0 grep -Hn "^func " -- >> "$OUT" || true
+  echo '```' >> "$OUT"
+  echo "" >> "$OUT"
+  echo "---" >> "$OUT"
+  echo "" >> "$OUT"
+fi
 
 # ── Size check ──────────────────────────────────────────────────────────────
 line_count=$(wc -l < "$OUT")
