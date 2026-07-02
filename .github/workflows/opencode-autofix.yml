@@ -485,6 +485,11 @@ jobs:
               confirmation the verification commands passed.
           PROMPT_EOF
 
+          # Snapshot the findings before the run — the agent deletes
+          # findings_scoped.json on success, but the commit-message step below
+          # needs it to describe what was actually fixed.
+          cp findings_scoped.json "$RUNNER_TEMP/findings_snapshot.json"
+
           opencode run --agent build -m "${{ inputs.model }}" < "$RUNNER_TEMP/autofix_prompt.md"
 
       - name: Run formatter
@@ -503,15 +508,10 @@ jobs:
         if: steps.findings.outputs.should_run == 'true'
         shell: bash
         run: |
-          # The OpenCode agent action commits its own changes as it works
-          # (confirmed: a new commit lands on HEAD during "Run OpenCode
-          # autofix", not just a dirty working tree). `git diff <commit>`
-          # (one-sided, no second ref) diffs that commit against the CURRENT
-          # WORKING TREE — captures both the agent's commit(s) AND any
-          # uncommitted formatter rewrite from the step above, regardless of
-          # which one actually committed. `--cached HEAD` (the previous
-          # version) only ever showed staged-but-uncommitted changes, which
-          # was empty once the agent had already committed past base_sha.
+          # Headless `opencode run` leaves its edits UNCOMMITTED in the working
+          # tree (plus any uncommitted formatter rewrite from the step above).
+          # `git diff --binary <base_sha>` (one-sided, no second ref) diffs
+          # base_sha against the current working tree, capturing all of it.
           git diff --binary "${{ steps.pr-info.outputs.base_sha }}" > fix.patch
           echo "patch size: $(wc -l < fix.patch) lines"
           # A legitimate zero-line patch happens when the agent finds all
@@ -525,12 +525,51 @@ jobs:
             echo "patch_empty=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Build a commit subject/body describing the ACTUAL findings fixed, from
+      # the pre-run findings snapshot minus whatever the agent skipped. Falls
+      # through silently (no file written) if nothing usable — publish then uses
+      # its generic fallback message.
+      - name: Build commit message
+        if: steps.findings.outputs.should_run == 'true' && steps.export.outputs.patch_empty != 'true'
+        shell: bash
+        run: |
+          SNAP="$RUNNER_TEMP/findings_snapshot.json"
+          [ -f "$SNAP" ] || exit 0
+
+          # Keys of findings the agent explicitly skipped (may be absent).
+          SKIPPED_KEYS=$(jq -c '[.[] | "\(.path):\(.line // "null")"]' autofix_skipped.json 2>/dev/null || echo '[]')
+
+          jq -r --argjson skipped "$SKIPPED_KEYS" '
+            map(. + {
+              key:   "\(.path):\(.line // "null")",
+              title: (.body | split("\n")[0] | sub("^\\[(CRITICAL|HIGH|MEDIUM|LOW)\\] "; ""))
+            })
+            | map(select(.key as $k | ($skipped | index($k)) == null))
+            as $fixed
+            | if ($fixed | length) == 0 then empty
+              else
+                ($fixed | map(.title)) as $t
+                | "fix(autofix): \(($t[0:2] | join("; "))[0:60])",
+                  "",
+                  "Automated fixes for \($fixed | length) review finding(s):",
+                  ($fixed[] | "- \(.path):\(.line) — \(.title)")
+              end
+          ' "$SNAP" > autofix_commit_msg.txt
+
+          # jq emits nothing when $fixed is empty — drop the empty file so
+          # publish falls back to the generic message.
+          [ -s autofix_commit_msg.txt ] || rm -f autofix_commit_msg.txt
+          echo "commit message:"; cat autofix_commit_msg.txt 2>/dev/null || echo "(none — generic fallback)"
+
       - name: Upload fix patch
         if: steps.findings.outputs.should_run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: autofix-patch-${{ github.run_id }}
-          path: fix.patch
+          path: |
+            fix.patch
+            autofix_commit_msg.txt
+          if-no-files-found: ignore
           retention-days: 1
 
       - name: Post failure comment
@@ -695,8 +734,20 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git apply --binary fix.patch
+
+          # Move artifacts out of the tree BEFORE `git add -A`, otherwise they
+          # get committed into the repo (observed: fix.patch landed in the
+          # autofix commit on astro-ads-be PR #733).
+          MSG_FILE="$RUNNER_TEMP/autofix_commit_msg.txt"
+          [ -f autofix_commit_msg.txt ] && mv autofix_commit_msg.txt "$MSG_FILE"
+          rm -f fix.patch
+
           git add -A
-          git commit -m "OpenCode autofix: ${SEVERITIES} fixes applied, all checks pass"
+          if [ -s "$MSG_FILE" ]; then
+            git commit -F "$MSG_FILE"
+          else
+            git commit -m "OpenCode autofix: ${SEVERITIES} fixes applied, all checks pass"
+          fi
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           if ! git push --force-with-lease origin "HEAD:refs/heads/${HEAD_REF}"; then
             gh pr comment "${PR_NUMBER}" --body "**OpenCode autofix gate passed but publish was rejected:** \`${HEAD_REF}\` moved during this run (concurrent push?). The verified fix was NOT published — please rerun \`/autofix\`."
