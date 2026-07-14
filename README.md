@@ -90,9 +90,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: elbertcl/code-review-toolkit/opencode-review@v1
+      - uses: elbertcl/code-review-toolkit/opencode-review@v3
         with:
-          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
+          api_key: ${{ secrets.REVIEW_AGENT_API_KEY }}
+          api_key_env: OPENROUTER_API_KEY
+          model: openrouter/deepseek/deepseek-v4-pro
           use_github_token: true
 ```
 
@@ -132,9 +134,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
-      - uses: elbertcl/code-review-toolkit/opencode-autofix@v1
+      - uses: elbertcl/code-review-toolkit/opencode-autofix@v3
         with:
-          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
+          api_key: ${{ secrets.REVIEW_AGENT_API_KEY }}
+          api_key_env: OPENROUTER_API_KEY
+          model: openrouter/deepseek/deepseek-v4-pro
           use_github_token: true
           verify_commands: |
             make build-all

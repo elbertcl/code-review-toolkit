@@ -2,10 +2,16 @@ name: OpenCode PR Review
 description: OpenCode PR review with re-review mode detection.
 
 inputs:
-  opencode_api_key:
-    description: OpenCode API key.
+  api_key:
+    description: API key for the model provider (e.g. OpenRouter, OpenCode).
     required: false
     default: ""
+  api_key_env:
+    description: >-
+      Env var name the API key is exported under. Must match the provider
+      encoded in `model` (e.g. OPENROUTER_API_KEY for an openrouter/* model).
+    required: false
+    default: OPENCODE_API_KEY
   model:
     description: OpenCode model.
     required: false
@@ -38,6 +44,19 @@ inputs:
 runs:
   using: composite
   steps:
+    # ── Export provider API key under its provider-specific env var name ───
+    # Env var *names* can't be built from expressions in a declarative `env:`
+    # map, so this exports it via $GITHUB_ENV instead. The value itself never
+    # appears in the run script's logged source (bash expands $API_KEY_VALUE
+    # at runtime, not the Actions expression engine at log time).
+    - name: Export provider API key
+      shell: bash
+      env:
+        API_KEY_VALUE: ${{ inputs.api_key }}
+        API_KEY_NAME: ${{ inputs.api_key_env }}
+      run: |
+        echo "${API_KEY_NAME}=${API_KEY_VALUE}" >> "$GITHUB_ENV"
+
     # ── PR metadata + mode detection ───────────────────────────────────────
     - name: Resolve PR metadata and acknowledge
       id: pr-info
@@ -404,7 +423,6 @@ runs:
         steps.loop_guard.outputs.skip != 'true'
       uses: anomalyco/opencode/github@v1.17.6
       env:
-        OPENCODE_API_KEY: ${{ inputs.opencode_api_key }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
         TMPDIR: ${{ github.workspace }}/.opencode/tmp
       with:
@@ -432,7 +450,6 @@ runs:
         steps.security.outputs.skip != 'true'
       uses: anomalyco/opencode/github@v1.17.6
       env:
-        OPENCODE_API_KEY: ${{ inputs.opencode_api_key }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
         TMPDIR: ${{ github.workspace }}/.opencode/tmp
       with:
