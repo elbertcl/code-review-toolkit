@@ -8,10 +8,12 @@ inputs:
     default: ""
   api_key_env:
     description: >-
-      Env var name the API key is exported under. Must match the provider
-      encoded in `model` (e.g. OPENROUTER_API_KEY for an openrouter/* model).
+      Override for the env var name the API key is exported under. Leave
+      empty (default) to auto-derive from the provider prefix in `model`
+      (e.g. openrouter/... -> OPENROUTER_API_KEY). Only needed for a
+      provider not in the toolkit's known table.
     required: false
-    default: OPENCODE_API_KEY
+    default: ""
   model:
     description: OpenCode model.
     required: false
@@ -49,12 +51,34 @@ runs:
     # map, so this exports it via $GITHUB_ENV instead. The value itself never
     # appears in the run script's logged source (bash expands $API_KEY_VALUE
     # at runtime, not the Actions expression engine at log time).
+    #
+    # api_key_env is an override — by default the env var name is derived
+    # from model's provider prefix, so consuming repos only ever need to set
+    # `model` + `api_key`, never opencode's internal per-provider env names.
     - name: Export provider API key
       shell: bash
       env:
         API_KEY_VALUE: ${{ inputs.api_key }}
-        API_KEY_NAME: ${{ inputs.api_key_env }}
+        API_KEY_OVERRIDE: ${{ inputs.api_key_env }}
+        MODEL: ${{ inputs.model }}
       run: |
+        if [ -n "${API_KEY_OVERRIDE}" ]; then
+          API_KEY_NAME="${API_KEY_OVERRIDE}"
+        else
+          PROVIDER="${MODEL%%/*}"
+          case "${PROVIDER}" in
+            opencode-go) API_KEY_NAME=OPENCODE_API_KEY ;;
+            openrouter)  API_KEY_NAME=OPENROUTER_API_KEY ;;
+            anthropic)   API_KEY_NAME=ANTHROPIC_API_KEY ;;
+            openai)      API_KEY_NAME=OPENAI_API_KEY ;;
+            deepseek)    API_KEY_NAME=DEEPSEEK_API_KEY ;;
+            groq)        API_KEY_NAME=GROQ_API_KEY ;;
+            *)
+              echo "::error::No known api_key_env mapping for provider '${PROVIDER}' (from model '${MODEL}'). Set api_key_env explicitly to override."
+              exit 1
+              ;;
+          esac
+        fi
         echo "${API_KEY_NAME}=${API_KEY_VALUE}" >> "$GITHUB_ENV"
 
     # ── PR metadata + mode detection ───────────────────────────────────────
