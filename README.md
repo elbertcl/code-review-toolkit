@@ -90,7 +90,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: elbertcl/code-review-toolkit/opencode-review@v3.0.0
+      - uses: elbertcl/code-review-toolkit/opencode-review@v3.0.1
         with:
           api_key: ${{ secrets.REVIEW_AGENT_API_KEY }}
           api_key_env: OPENROUTER_API_KEY
@@ -99,6 +99,32 @@ jobs:
 ```
 
 Keep repo-specific review policy in the consuming repo, for example `AGENTS.md`, `docs/review-dimensions.md`, or `.github/instructions/review-depth.instructions.md`.
+
+### Model & provider configuration
+
+`opencode-review` and `opencode-autofix` (both the composite action and the reusable
+`opencode-autofix.yml` workflow) take the same three knobs:
+
+| Input | What it is | Who defines the valid values |
+|---|---|---|
+| `model` | `<provider>/<model>` string passed straight through to the `opencode` CLI | opencode's own model catalog ([models.dev](https://models.dev)) — **not** a toolkit convention. The CLI splits on the first `/`; everything after is the model ID as that provider names it. |
+| `api_key` | The secret value | Whatever your repo's GitHub secret holds — the **secret's name** (`REVIEW_AGENT_API_KEY`, `OPENCODE_API_KEY`, anything) is your choice and irrelevant to opencode. |
+| `api_key_env` | The env var name the value gets exported under before `opencode` runs | opencode itself — it looks up auth by a fixed env var name per provider, independent of what your GitHub secret is called. Must match the provider prefix in `model`. |
+
+`api_key_env` defaults to `OPENCODE_API_KEY` (opencode's own hosted gateway, no override
+needed). Switching provider means changing both `model`'s prefix and `api_key_env` together:
+
+| `model` prefix | `api_key_env` | Notes |
+|---|---|---|
+| `opencode-go/...` | `OPENCODE_API_KEY` | opencode's hosted gateway (default) |
+| `openrouter/...` | `OPENROUTER_API_KEY` | e.g. `openrouter/deepseek/deepseek-v4-pro` |
+| `anthropic/...` | `ANTHROPIC_API_KEY` | |
+| `openai/...` | `OPENAI_API_KEY` | |
+| `deepseek/...` | `DEEPSEEK_API_KEY` | DeepSeek's own API, not via a router |
+| `groq/...` | `GROQ_API_KEY` | |
+
+Verify any provider/model/env combo against opencode's live catalog before using it —
+`curl -sf https://models.dev/api.json | jq '.<provider>'` — rather than guessing a model ID.
 
 ## OpenCode Autofix
 
@@ -134,7 +160,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
-      - uses: elbertcl/code-review-toolkit/opencode-autofix@v3.0.0
+      - uses: elbertcl/code-review-toolkit/opencode-autofix@v3.0.1
         with:
           api_key: ${{ secrets.REVIEW_AGENT_API_KEY }}
           api_key_env: OPENROUTER_API_KEY
@@ -148,6 +174,44 @@ jobs:
 ```
 
 Usage: `/autofix` (defaults to `CRITICAL,HIGH`), `/autofix HIGH,MEDIUM`, `/autofix ALL`.
+
+### OpenCode Autofix — reusable multi-job variant
+
+`opencode-autofix@v3.0.1` above is a single-job composite action: gate commands run
+sequentially on one runner. `.github/workflows/opencode-autofix.yml` is the same fixer
+split across parallel jobs (`fix` → `lint` + `build` + `test` in parallel → `publish`) —
+use it when the gate commands are slow enough that CPU contention on one runner matters.
+Same `api_key`/`api_key_env`/`model` contract, but gate commands are split into three
+inputs instead of one `verify_commands` block, called via `workflow_call` not `uses:` on
+a step:
+
+```yaml
+jobs:
+  autofix:
+    if: |
+      github.event.issue.pull_request != null &&
+      (github.event.comment.body == '/autofix' || startsWith(github.event.comment.body, '/autofix '))
+    uses: elbertcl/code-review-toolkit/.github/workflows/opencode-autofix.yml@v3.0.1
+    with:
+      use_github_token: true
+      model: openrouter/deepseek/deepseek-v4-pro
+      variant: max
+      api_key_env: OPENROUTER_API_KEY
+      verify_lint_command: make lint-new
+      verify_build_command: make build-all
+      verify_test_command: make test
+      base_branch: develop
+      setup_go: true
+      go_version_file: go.mod
+      golangci_lint_version: v2.12.2
+    secrets:
+      api_key: ${{ secrets.REVIEW_AGENT_API_KEY }}
+      git_token: ${{ secrets.workflow_token }}
+```
+
+Note the split: `model`/`variant`/`api_key_env` are plain `with:` inputs, but `api_key`
+(the actual secret value) goes under `secrets:` — `workflow_call` keeps the two separate
+so secret values get masking guarantees plain inputs don't.
 
 ### Reusing across repos without quality loss
 
