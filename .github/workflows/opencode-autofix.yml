@@ -16,6 +16,13 @@ on:
       variant:
         type: string
         default: max
+      api_key_env:
+        description: >-
+          Env var name the api_key secret is exported under. Must match the
+          provider encoded in `model` (e.g. OPENROUTER_API_KEY for an
+          openrouter/* model).
+        type: string
+        default: OPENCODE_API_KEY
       use_github_token:
         type: boolean
         default: false
@@ -80,7 +87,7 @@ on:
         type: string
         default: v2.0.0
     secrets:
-      opencode_api_key:
+      api_key:
         required: true
       git_token:
         required: false
@@ -401,8 +408,16 @@ jobs:
         if: steps.findings.outputs.should_run == 'true'
         shell: bash
         env:
-          OPENCODE_API_KEY: ${{ secrets.opencode_api_key }}
+          API_KEY_VALUE: ${{ secrets.api_key }}
+          API_KEY_NAME: ${{ inputs.api_key_env }}
         run: |
+          # Env var *names* can't be built from expressions in a declarative
+          # `env:` map, so the provider-specific key is exported here instead.
+          # The value itself never appears in the logged script source (bash
+          # expands $API_KEY_VALUE at runtime, not the Actions expression
+          # engine at log time).
+          export "${API_KEY_NAME}=${API_KEY_VALUE}"
+
           # Non-interactive run cannot answer permission prompts — grant edit +
           # bash via global config (merges under the repo's own .opencode config,
           # which supplies AGENTS.md instructions and skills).
