@@ -84,7 +84,7 @@ find_invariant_file() {
         ;;
     esac
   done
-  [ -n "$best_file" ] && echo "$best_file"
+  [ -n "$best_file" ] && echo "$best_file" || true
 }
 
 # ── Auto-discover domain names from this repo's docs structure ───────────────
