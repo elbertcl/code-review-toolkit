@@ -1,0 +1,314 @@
+name: OpenCode Review
+
+on:
+  workflow_call:
+    inputs:
+      model: {type: string, required: true}
+      variant: {type: string, required: false, default: max}
+      toolkit_sha: {type: string, required: true}
+      opencode_version: {type: string, required: true}
+      opencode_download_url: {type: string, required: true}
+      opencode_sha256: {type: string, required: true}
+      api_key_env: {type: string, required: false, default: ''}
+      enable_serena: {type: boolean, required: false, default: false}
+      serena_version: {type: string, required: false, default: ''}
+    secrets:
+      api_key: {required: true}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opencode-review-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions: {contents: read, pull-requests: read}
+    outputs:
+      proceed: ${{ steps.archive.outputs.proceed }}
+      head_sha: ${{ steps.gate.outputs.head_sha }}
+      base_sha: ${{ steps.gate.outputs.base_sha }}
+      context_status: ${{ steps.archive.outputs.context_status }}
+      preflight_checksum: ${{ steps.archive.outputs.preflight_checksum }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: elbertcl/code-review-toolkit
+          ref: ${{ inputs.toolkit_sha }}
+          path: toolkit
+          persist-credentials: false
+      - name: Verify immutable toolkit checkout
+        env:
+          TOOLKIT_SHA: ${{ inputs.toolkit_sha }}
+        run: node toolkit/scripts/validate-toolkit-sha.mjs "$TOOLKIT_SHA" toolkit
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: consumer
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run deterministic gate
+        id: gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REQUESTER_LOGIN: ${{ github.event.comment.user.login }}
+          REQUESTER_ASSOCIATION: ${{ github.event.comment.author_association }}
+          REVIEW_WORKSPACE: ${{ github.workspace }}/consumer
+        working-directory: consumer
+        run: node ../toolkit/scripts/run-review-gate.mjs
+      - name: Build trusted review inputs
+        id: inputs
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          BASE_SHA: ${{ steps.gate.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git -c http.extraheader="${auth}" fetch --no-tags --depth=64 origin "${BASE_SHA}" "${HEAD_SHA}"
+          depth=64
+          until git merge-base "${BASE_SHA}" "${HEAD_SHA}" >/dev/null 2>&1; do
+            test "${depth}" -lt 4096 || { echo "merge-base not found within 4096 commits" >&2; exit 1; }
+            git -c http.extraheader="${auth}" fetch --no-tags --deepen="${depth}" origin "${BASE_SHA}" "${HEAD_SHA}"
+            depth=$((depth * 2))
+          done
+          test "$(git rev-parse "${HEAD_SHA}")" = "${HEAD_SHA}"
+          merge_base="$(git merge-base "${BASE_SHA}" "${HEAD_SHA}")"
+          node ../toolkit/scripts/prepare-review-state.mjs "${HEAD_SHA}" "${merge_base}" "$PWD" "$PWD/.opencode/tmp/review-state.json"
+          skip_reason="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(".opencode/tmp/review-state.json")).skip_reason ?? "")')"
+          if [[ "${skip_reason}" == already_reviewed ]]; then
+            printf '%s\n' '**OpenCode review skipped.** This commit was already reviewed; push a new commit before requesting another review.' > .opencode/tmp/review-gate-comment.md
+            echo "context_status=READY" >> "$GITHUB_OUTPUT"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cp .opencode/tmp/changed-files.json .opencode/tmp/selected-files.json
+          node ../toolkit/scripts/build-review-diff.mjs "$PWD" "${HEAD_SHA}" "$PWD/.opencode/tmp/review-state.json" "$PWD/.opencode/tmp/selected-files.json" "$PWD/.opencode/tmp/review.diff" "$PWD/.opencode/tmp/changed-files.json"
+          node ../toolkit/scripts/lib/addressable-lines.mjs .opencode/tmp/review.diff .opencode/tmp/addressable-lines.json
+          node ../toolkit/scripts/prepare-review-context.mjs --workspace "$PWD" --trusted-ref "${BASE_SHA}" --changed-files "$PWD/.opencode/tmp/changed-files.json" --org-contexts "$GITHUB_WORKSPACE/toolkit/contexts" --max-bytes 500000
+          context_status="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(".opencode/tmp/review_context.metadata.json")).status)')"
+          echo "context_status=${context_status}" >> "$GITHUB_OUTPUT"
+          if [[ "${context_status}" == BLOCKED ]]; then
+            printf '%s\n' '**OpenCode review blocked.** Required trusted review context is blocked.' > .opencode/tmp/review-gate-comment.md
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+        working-directory: consumer
+      - name: Archive preflight result
+        id: archive
+        if: always()
+        working-directory: consumer
+        env:
+          GATE_PROCEED: ${{ steps.gate.outputs.proceed }}
+          GATE_CONTEXT_STATUS: ${{ steps.gate.outputs.context_status }}
+          INPUT_PROCEED: ${{ steps.inputs.outputs.proceed }}
+          INPUT_CONTEXT_STATUS: ${{ steps.inputs.outputs.context_status }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/preflight-result"; mkdir -p "$root"
+          proceed="$GATE_PROCEED"
+          context_status="$GATE_CONTEXT_STATUS"
+          if [[ -n "$INPUT_PROCEED" ]]; then proceed="$INPUT_PROCEED"; fi
+          if [[ -n "$INPUT_CONTEXT_STATUS" ]]; then context_status="$INPUT_CONTEXT_STATUS"; fi
+          archive="$RUNNER_TEMP/preflight-result-${GITHUB_RUN_ID}.tar.gz"
+          if [[ "${proceed}" == true ]]; then
+            cp .opencode/tmp/{changed-files.json,addressable-lines.json,review.diff,review_context.md,review_context.metadata.json,review-state.json} "$root/"
+            tar -czf "$archive" -C "$root" changed-files.json addressable-lines.json review.diff review_context.md review_context.metadata.json review-state.json
+          else
+            cp .opencode/tmp/review-gate-comment.md "$root/blocked-comment.md" 2>/dev/null || printf '%s\n' '**OpenCode review blocked.** Preflight did not produce a detailed reason; inspect this workflow run. <!-- fallback blocked result -->' > "$root/blocked-comment.md"
+            tar -czf "$archive" -C "$root" blocked-comment.md
+          fi
+          checksum="$(sha256sum "$archive" | cut -d' ' -f1)"; echo "$checksum  $(basename "$archive")" > "$archive.sha256"
+          echo "preflight_checksum=$checksum" >> "$GITHUB_OUTPUT"
+          echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
+          echo "context_status=$context_status" >> "$GITHUB_OUTPUT"
+      - name: Upload preflight result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: preflight-result-${{ github.run_id }}
+          path: ${{ runner.temp }}/preflight-result-${{ github.run_id }}*
+          retention-days: 1
+          if-no-files-found: error
+
+  analysis:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.proceed == 'true' }}
+    runs-on: ubuntu-latest
+    permissions: {contents: read}
+    outputs:
+      analysis_checksum: ${{ steps.archive.outputs.analysis_checksum }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.preflight.outputs.head_sha }}
+          path: consumer
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: elbertcl/code-review-toolkit
+          ref: ${{ inputs.toolkit_sha }}
+          path: toolkit
+          persist-credentials: false
+      - name: Verify immutable toolkit checkout
+        env:
+          TOOLKIT_SHA: ${{ inputs.toolkit_sha }}
+        run: node toolkit/scripts/validate-toolkit-sha.mjs "$TOOLKIT_SHA" toolkit
+      - run: test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD_SHA}"
+        env: {EXPECTED_HEAD_SHA: '${{ needs.preflight.outputs.head_sha }}'}
+        working-directory: consumer
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: preflight-result-${{ github.run_id }}
+          path: ${{ runner.temp }}/preflight-download
+      - name: Validate and extract preflight result
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/preflight-download/preflight-result-${GITHUB_RUN_ID}.tar.gz"; test "$(sha256sum "$archive" | cut -d' ' -f1)" = "$PREFLIGHT_CHECKSUM"
+          node toolkit/scripts/extract-checked-tar.mjs "$archive" "$RUNNER_TEMP/review-input" preflight
+          node -e 'const fs=require("fs"); const s=JSON.parse(fs.readFileSync(process.argv[1])); const a=JSON.parse(fs.readFileSync(process.argv[2])); const r=JSON.parse(fs.readFileSync(process.argv[3])); fs.writeFileSync(process.argv[4],JSON.stringify({workspace:process.env.GITHUB_WORKSPACE+"/consumer",inputDirectory:process.env.RUNNER_TEMP+"/review-input",outputPath:process.env.RUNNER_TEMP+"/findings.json",reviewedHead:process.env.HEAD_SHA,mode:r.mode,dimensions:["business-correctness","performance","maintainability","security","sre"],changedPaths:s,addressableLines:a,priorFindings:r.known_threads,knownThreads:r.known_threads,knownThreadIds:r.known_threads.map(x=>x.thread_id),executable:process.env.OPENCODE_EXECUTABLE,model:process.env.MODEL,variant:process.env.VARIANT,variantSupported:process.env.VARIANT_SUPPORTED==="true"}))' "$RUNNER_TEMP/review-input/changed-files.json" "$RUNNER_TEMP/review-input/addressable-lines.json" "$RUNNER_TEMP/review-input/review-state.json" "$RUNNER_TEMP/analysis-input.json"
+        env: {HEAD_SHA: '${{ needs.preflight.outputs.head_sha }}', MODEL: '${{ inputs.model }}', VARIANT: '${{ inputs.variant }}', VARIANT_SUPPORTED: 'false', OPENCODE_EXECUTABLE: '${{ runner.temp }}/opencode/bin/opencode', PREFLIGHT_CHECKSUM: '${{ needs.preflight.outputs.preflight_checksum }}'}
+      - name: Run dedicated headless analysis
+        working-directory: consumer
+        env:
+          API_KEY_VALUE: ${{ secrets.api_key }}
+          API_KEY_OVERRIDE: ${{ inputs.api_key_env }}
+          OPENCODE_MODEL: ${{ inputs.model }}
+          OPENCODE_EXECUTABLE: ${{ runner.temp }}/opencode/bin/opencode
+          OPENCODE_DOWNLOAD_URL: ${{ inputs.opencode_download_url }}
+          OPENCODE_SHA256: ${{ inputs.opencode_sha256 }}
+          OPENCODE_VERSION: ${{ inputs.opencode_version }}
+          ENABLE_SERENA: ${{ inputs.enable_serena }}
+          SERENA_VERSION: ${{ inputs.serena_version }}
+        run: |
+          set -euo pipefail
+          node ../toolkit/scripts/install-opencode.mjs "$OPENCODE_DOWNLOAD_URL" "$OPENCODE_SHA256" "$OPENCODE_VERSION" "$OPENCODE_EXECUTABLE"
+          serena_status="$RUNNER_TEMP/serena-status.json"
+          serena_home="$RUNNER_TEMP/serena"
+          node ../toolkit/scripts/prepare-serena.mjs "$ENABLE_SERENA" "$SERENA_VERSION" "$serena_home" "$PWD" "$RUNNER_TEMP/analysis-input.json" "$serena_status" "../toolkit/scripts/setup-serena.sh" "../toolkit/poc/serena/readiness-report.md"
+          API_KEY_NAME="$(node ../toolkit/scripts/resolve-provider-env.mjs "${OPENCODE_MODEL}" "${API_KEY_OVERRIDE}")"
+          export API_KEY_NAME
+          export "${API_KEY_NAME}=${API_KEY_VALUE}"
+          variant_supported=false
+          if "$OPENCODE_EXECUTABLE" run --help | grep -q -- '--variant'; then variant_supported=true; fi
+          export VARIANT_SUPPORTED="$variant_supported"
+          node -e 'const fs=require("fs");const p=process.argv[1],v=JSON.parse(fs.readFileSync(p));v.providerKeyEnv=process.env.API_KEY_NAME;v.variantSupported=process.env.VARIANT_SUPPORTED==="true";fs.writeFileSync(p,JSON.stringify(v))' "$RUNNER_TEMP/analysis-input.json"
+          node ../toolkit/scripts/run-review-analysis.mjs "$RUNNER_TEMP/analysis-input.json"
+          node --input-type=module -e 'import fs from "node:fs";import {addSerenaStatus} from "../toolkit/scripts/lib/serena-status.mjs";const p=process.argv[1],s=JSON.parse(fs.readFileSync(process.argv[2]));fs.writeFileSync(p,JSON.stringify(addSerenaStatus(JSON.parse(fs.readFileSync(p)),s)))' "$RUNNER_TEMP/findings.json" "$serena_status"
+      - name: Archive analysis result
+        id: archive
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/review-input/"{review-state.json,changed-files.json,addressable-lines.json} "$RUNNER_TEMP/"
+          archive="$RUNNER_TEMP/analysis-result-${GITHUB_RUN_ID}.tar.gz"; tar -czf "$archive" -C "$RUNNER_TEMP" findings.json review-state.json changed-files.json addressable-lines.json serena-status.json
+          checksum="$(sha256sum "$archive" | cut -d' ' -f1)"; echo "$checksum  $(basename "$archive")" > "$archive.sha256"; echo "analysis_checksum=$checksum" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: analysis-result-${{ github.run_id }}
+          path: ${{ runner.temp }}/analysis-result-${{ github.run_id }}*
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: [preflight, analysis]
+    if: ${{ needs.analysis.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions: {contents: read, issues: write, pull-requests: write}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: elbertcl/code-review-toolkit
+          ref: ${{ inputs.toolkit_sha }}
+          path: toolkit
+          persist-credentials: false
+      - name: Verify immutable toolkit checkout
+        env:
+          TOOLKIT_SHA: ${{ inputs.toolkit_sha }}
+        run: node toolkit/scripts/validate-toolkit-sha.mjs "$TOOLKIT_SHA" toolkit
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: analysis-result-${{ github.run_id }}
+          path: ${{ runner.temp }}/analysis-download
+      - name: Validate, publish, and verify
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/analysis-download/analysis-result-${GITHUB_RUN_ID}.tar.gz"; test "$(sha256sum "$archive" | cut -d' ' -f1)" = "$ANALYSIS_CHECKSUM"
+          node toolkit/scripts/extract-checked-tar.mjs "$archive" "$RUNNER_TEMP/publication-input" analysis
+          node -e 'const fs=require("fs"); const root=process.env.RUNNER_TEMP+"/publication-input/"; fs.writeFileSync(process.env.RUNNER_TEMP+"/publication-options.json",JSON.stringify({repository:process.env.GITHUB_REPOSITORY,prNumber:Number(process.env.PR_NUMBER),runId:process.env.GITHUB_RUN_ID,runUrl:process.env.RUN_URL,workflowPath:".github/workflows/opencode-review.yml",findingsPath:root+"findings.json",statePath:root+"review-state.json",changedPaths:JSON.parse(fs.readFileSync(root+"changed-files.json")),addressableLines:JSON.parse(fs.readFileSync(root+"addressable-lines.json")),dimensions:["business-correctness","performance","maintainability","security","sre"],model:process.env.MODEL,variant:process.env.VARIANT,toolkitVersion:process.env.TOOLKIT_SHA,contextStatus:process.env.CONTEXT_STATUS}))'
+          node toolkit/scripts/prepare-publication-inputs.mjs "$RUNNER_TEMP/publication-options.json" "$RUNNER_TEMP/publish-input.json" "$RUNNER_TEMP/verify-input.json"
+          node toolkit/scripts/publish-review.mjs "$RUNNER_TEMP/publish-input.json"
+          node toolkit/scripts/verify-review-publication.mjs "$RUNNER_TEMP/verify-input.json"
+          # Publication verification uses per_page=100 and follows rel="next" pagination.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          MODEL: ${{ inputs.model }}
+          VARIANT: ${{ inputs.variant }}
+          CONTEXT_STATUS: ${{ needs.preflight.outputs.context_status }}
+          TOOLKIT_SHA: ${{ inputs.toolkit_sha }}
+          ANALYSIS_CHECKSUM: ${{ needs.analysis.outputs.analysis_checksum }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  blocked:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.proceed == 'false' }}
+    runs-on: ubuntu-latest
+    permissions: {issues: write}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: elbertcl/code-review-toolkit
+          ref: ${{ inputs.toolkit_sha }}
+          path: toolkit
+          persist-credentials: false
+      - env:
+          TOOLKIT_SHA: ${{ inputs.toolkit_sha }}
+        run: node toolkit/scripts/validate-toolkit-sha.mjs "$TOOLKIT_SHA" toolkit
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: preflight-result-${{ github.run_id }}
+          path: ${{ runner.temp }}/preflight-download
+      - name: Publish checksummed blocked result
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          PREFLIGHT_CHECKSUM: ${{ needs.preflight.outputs.preflight_checksum }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/preflight-download/preflight-result-${GITHUB_RUN_ID}.tar.gz"
+          test "$(sha256sum "$archive" | cut -d' ' -f1)" = "$PREFLIGHT_CHECKSUM"
+          node toolkit/scripts/extract-checked-tar.mjs "$archive" "$RUNNER_TEMP/blocked-input" blocked
+          node toolkit/scripts/post-issue-comment.mjs --file "$RUNNER_TEMP/blocked-input/blocked-comment.md"
+
+  finalize:
+    needs: [preflight, analysis, publish, blocked]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {issues: write}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: elbertcl/code-review-toolkit
+          ref: ${{ inputs.toolkit_sha }}
+          path: toolkit
+          persist-credentials: false
+      - name: Post one incomplete-run status when needed
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          TOOLKIT_SHA: ${{ inputs.toolkit_sha }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          ANALYSIS_RESULT: ${{ needs.analysis.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+        run: |
+          set -euo pipefail
+          node toolkit/scripts/validate-toolkit-sha.mjs "$TOOLKIT_SHA" toolkit
+          # Cancelled runs are superseded by concurrency and must remain silent.
+          if [[ "$PREFLIGHT_RESULT" != cancelled && "$ANALYSIS_RESULT" != cancelled && "$PUBLISH_RESULT" != cancelled ]] && { [[ "$PREFLIGHT_RESULT" == failure ]] || [[ "$ANALYSIS_RESULT" == failure ]] || [[ "$PUBLISH_RESULT" == failure ]]; }; then
+            node toolkit/scripts/post-issue-comment.mjs "**OpenCode review incomplete.** No completed marker was emitted; inspect this workflow run."
+          fi

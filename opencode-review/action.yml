@@ -1,547 +1,70 @@
-name: OpenCode PR Review
-description: OpenCode PR review with re-review mode detection.
+name: OpenCode PR Analysis
+description: Runs a headless, read-only review and emits a validated local findings artifact.
 
 inputs:
   api_key:
-    description: API key for the model provider (e.g. OpenRouter, OpenCode).
-    required: false
-    default: ""
+    description: Provider API key.
+    required: true
   api_key_env:
-    description: >-
-      Override for the env var name the API key is exported under. Leave
-      empty (default) to auto-derive from the provider prefix in `model`
-      (e.g. openrouter/... -> OPENROUTER_API_KEY). Only needed for a
-      provider not in the toolkit's known table.
+    description: Optional provider environment override; known providers derive it from model.
     required: false
-    default: ""
+    default: ''
   model:
     description: OpenCode model.
-    required: false
-    default: opencode-go/deepseek-v4-pro
+    required: true
   variant:
     description: OpenCode variant.
     required: false
     default: max
-  mentions:
-    description: Mention command passed to OpenCode.
-    required: false
-    default: /review
-  share:
-    description: Whether OpenCode sharing is enabled.
+  analysis_input:
+    description: Absolute path to analysis-input.json.
+    required: true
+  opencode_version:
+    description: Exact OpenCode release version.
+    required: true
+  opencode_download_url:
+    description: Immutable HTTPS asset URL for the exact OpenCode release.
+    required: true
+  opencode_sha256:
+    description: Lowercase SHA-256 digest of the OpenCode release asset.
+    required: true
+  enable_serena:
+    description: Enable fail-open experimental Serena MCP context.
     required: false
     default: "false"
-  use_github_token:
-    description: Use GitHub Actions GITHUB_TOKEN instead of OpenCode GitHub App token exchange.
-    required: false
-    default: "false"
-  github_token:
-    description: GitHub token passed to OpenCode when use_github_token is true.
-    required: false
-    default: ${{ github.token }}
-  extra_prompt:
-    description: Extra consuming-repo review instructions.
+  serena_version:
+    description: Exact 40-character Serena commit SHA.
     required: false
     default: ""
 
 runs:
   using: composite
   steps:
-    # ── Export provider API key under its provider-specific env var name ───
-    # Env var *names* can't be built from expressions in a declarative `env:`
-    # map, so this exports it via $GITHUB_ENV instead. The value itself never
-    # appears in the run script's logged source (bash expands $API_KEY_VALUE
-    # at runtime, not the Actions expression engine at log time).
-    #
-    # api_key_env is an override — by default the env var name is derived
-    # from model's provider prefix, so consuming repos only ever need to set
-    # `model` + `api_key`, never opencode's internal per-provider env names.
-    - name: Export provider API key
+    - name: Install verified OpenCode CLI
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
+        OPENCODE_DOWNLOAD_URL: ${{ inputs.opencode_download_url }}
+        OPENCODE_SHA256: ${{ inputs.opencode_sha256 }}
+        OPENCODE_VERSION: ${{ inputs.opencode_version }}
+      run: node "$ACTION_PATH/../scripts/install-opencode.mjs" "$OPENCODE_DOWNLOAD_URL" "$OPENCODE_SHA256" "$OPENCODE_VERSION" "$RUNNER_TEMP/opencode/bin/opencode"
+    - name: Run safe headless analysis
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        ANALYSIS_INPUT: ${{ inputs.analysis_input }}
         API_KEY_VALUE: ${{ inputs.api_key }}
         API_KEY_OVERRIDE: ${{ inputs.api_key_env }}
-        MODEL: ${{ inputs.model }}
+        OPENCODE_MODEL: ${{ inputs.model }}
+        OPENCODE_VARIANT: ${{ inputs.variant }}
+        ENABLE_SERENA: ${{ inputs.enable_serena }}
+        SERENA_VERSION: ${{ inputs.serena_version }}
       run: |
-        if [ -n "${API_KEY_OVERRIDE}" ]; then
-          API_KEY_NAME="${API_KEY_OVERRIDE}"
-        else
-          PROVIDER="${MODEL%%/*}"
-          case "${PROVIDER}" in
-            opencode-go) API_KEY_NAME=OPENCODE_API_KEY ;;
-            openrouter)  API_KEY_NAME=OPENROUTER_API_KEY ;;
-            anthropic)   API_KEY_NAME=ANTHROPIC_API_KEY ;;
-            openai)      API_KEY_NAME=OPENAI_API_KEY ;;
-            deepseek)    API_KEY_NAME=DEEPSEEK_API_KEY ;;
-            groq)        API_KEY_NAME=GROQ_API_KEY ;;
-            *)
-              echo "::error::No known api_key_env mapping for provider '${PROVIDER}' (from model '${MODEL}'). Set api_key_env explicitly to override."
-              exit 1
-              ;;
-          esac
-        fi
-        echo "${API_KEY_NAME}=${API_KEY_VALUE}" >> "$GITHUB_ENV"
-
-    # ── PR metadata + mode detection ───────────────────────────────────────
-    - name: Resolve PR metadata and acknowledge
-      id: pr-info
-      uses: actions/github-script@v7
-      with:
-        github-token: ${{ github.token }}
-        script: |
-          const owner = context.repo.owner;
-          const repo = context.repo.repo;
-          const issueNumber = context.payload.issue.number;
-          const commentId = context.payload.comment.id;
-          const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-
-          const { data: pr } = await github.rest.pulls.get({
-            owner,
-            repo,
-            pull_number: issueNumber
-          });
-
-          if (pr.draft) {
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: issueNumber,
-              body: '**OpenCode review skipped:** PR is still a draft.'
-            });
-            core.setOutput('skip', 'true');
-            return;
-          }
-
-          // Detect mode: search for prior <!-- opencode-pr-review --> comments.
-          // An opencode-pr-review marker is the definitive signal that a full
-          // OpenCode review cycle completed on this PR.
-          const { data: comments } = await github.rest.issues.listComments({
-            owner, repo, issue_number: issueNumber, per_page: 100
-          });
-          const priorVerdicts = comments.filter(c =>
-            c.user.login === 'github-actions[bot]' &&
-            c.body.includes('<!-- opencode-pr-review -->')
-          );
-          const mode = priorVerdicts.length === 0 ? 'review' : 're-review';
-          core.info(`==> Mode: ${mode} (${priorVerdicts.length} prior verdict(s))`);
-
-          await github.rest.reactions.createForIssueComment({
-            owner,
-            repo,
-            comment_id: commentId,
-            content: 'eyes'
-          });
-
-          const emoji = mode === 'review' ? '🔍' : '🔄';
-          const label = mode === 'review' ? 'OpenCode review started' : 'OpenCode re-review started';
-          await github.rest.issues.createComment({
-            owner, repo, issue_number: issueNumber,
-            body: `${emoji} **${label}** for commit \`${pr.head.sha.slice(0, 7)}\`. [View workflow run](${runUrl})`
-          });
-
-          core.setOutput('skip',       'false');
-          core.setOutput('head_sha',   pr.head.sha);
-          core.setOutput('pr_url',     pr.html_url);
-          core.setOutput('mode',       mode);
-          core.setOutput('pr_author',  pr.user.login);
-
-    # ── Re-review: pre-flight guard ───────────────────────────────────────
-    - name: Re-review pre-flight check
-      id: preflight
-      if: steps.pr-info.outputs.skip == 'false' && steps.pr-info.outputs.mode == 're-review'
-      uses: actions/github-script@v7
-      with:
-        github-token: ${{ github.token }}
-        script: |
-          const owner    = context.repo.owner;
-          const repo     = context.repo.repo;
-          const prNum    = context.payload.issue.number;
-
-          // Fetch all inline comments by github-actions[bot] that match the
-          // OpenCode review format ([SEVERITY] prefix).
-          const { data: inlineComments } = await github.rest.pulls.listReviewComments({
-            owner, repo, pull_number: prNum, per_page: 100
-          });
-          const severityPrefixes = /^\[(CRITICAL|HIGH|MEDIUM|LOW)\]/;
-          const reviewerComments = inlineComments.filter(c =>
-            c.user.login === 'github-actions[bot]' &&
-            severityPrefixes.test(c.body || '')
-          );
-
-          if (reviewerComments.length === 0) {
-            // Phase 2.1: No prior inline reviewer comments.
-            // If HEAD changed since the last verdict, the prior run was incomplete
-            // (verdict posted but inline batch failed/timed out). Auto-switch to
-            // a fresh full review.
-            const currentHeadSha = '${{ steps.pr-info.outputs.head_sha }}';
-            const { data: allIssueComments } = await github.rest.issues.listComments({
-              owner, repo, issue_number: prNum, per_page: 100
-            });
-            const verdictComments = allIssueComments
-              .filter(c => c.user.login === 'github-actions[bot]' && c.body.includes('<!-- opencode-pr-review -->') && c.body.includes('<!-- reviewed-head:'))
-              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-            let lastVerdictSha = null;
-            if (verdictComments.length > 0) {
-              const match = verdictComments[0].body.match(/<!-- reviewed-head: ([a-f0-9]+) -->/);
-              if (match) lastVerdictSha = match[1];
-            }
-
-            if (lastVerdictSha && lastVerdictSha !== currentHeadSha) {
-              core.info(`Phase 2.1: No inline comments but HEAD changed (${lastVerdictSha.slice(0, 7)} → ${currentHeadSha.slice(0, 7)}) — auto-switching to fresh full review`);
-              core.setOutput('skip', 'false');
-              core.setOutput('mode_override', 'review');
-              return;
-            }
-
-            await github.rest.issues.createComment({
-              owner, repo, issue_number: prNum,
-              body: '**OpenCode re-review skipped:** No prior inline review comments found from the last OpenCode review. This PR has not been fully reviewed yet. Triggering a fresh review instead is recommended — delete the existing `PR Verdict:` comment and comment `/review` again.'
-            });
-            core.setOutput('skip', 'true');
-            return;
-          }
-
-          // Phase 2.3: Check if a complete review cycle already exists for this HEAD.
-          const currentHeadSha = '${{ steps.pr-info.outputs.head_sha }}';
-          const { data: issueComments } = await github.rest.issues.listComments({
-            owner, repo, issue_number: prNum, per_page: 100
-          });
-          const verdictForCurrentHead = issueComments.some(c =>
-            c.user.login === 'github-actions[bot]' &&
-            c.body.includes('<!-- opencode-pr-review -->') &&
-            c.body.includes(`<!-- reviewed-head: ${currentHeadSha} -->`)
-          );
-
-          if (verdictForCurrentHead) {
-            await github.rest.issues.createComment({
-              owner, repo, issue_number: prNum,
-              body: `**OpenCode re-review skipped:** No changes since last review (head is still \`${currentHeadSha.slice(0, 7)}\`). Push new commits or force-push a rebase to trigger a re-review.`
-            });
-            core.setOutput('skip', 'true');
-            return;
-          }
-
-          core.setOutput('skip', 'false');
-
-    # ── Re-review: verify commenter is PR author or trusted member ──────────
-    - name: Re-review security check
-      id: security
-      if: steps.pr-info.outputs.skip == 'false' && steps.pr-info.outputs.mode == 're-review' && steps.preflight.outputs.skip != 'true' && steps.preflight.outputs.mode_override != 'review'
-      uses: actions/github-script@v7
-      with:
-        github-token: ${{ github.token }}
-        script: |
-          const commenterLogin = context.payload.comment.user.login;
-          const authorAssoc    = context.payload.comment.author_association;
-          const prAuthor       = '${{ steps.pr-info.outputs.pr_author }}';
-          const trusted        = ['OWNER', 'MEMBER', 'COLLABORATOR'];
-
-          if (commenterLogin !== prAuthor && !trusted.includes(authorAssoc)) {
-            core.info(`${commenterLogin} is not the PR author or a trusted member — skipping re-review`);
-            core.setOutput('skip', 'true');
-            return;
-          }
-          core.setOutput('skip', 'false');
-
-    # ── Review mode: guard against reviewing the same commit twice ──────────
-    - name: Loop guard
-      id: loop_guard
-      if: steps.pr-info.outputs.skip == 'false' && (steps.pr-info.outputs.mode == 'review' || steps.preflight.outputs.mode_override == 'review')
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        HEAD_SHA="${{ steps.pr-info.outputs.head_sha }}"
-        PR_NUMBER="${{ github.event.issue.number }}"
-        REPO="${{ github.repository }}"
-
-        # Check if a *complete* OpenCode review cycle already exists for this HEAD.
-        # A complete cycle is proven by a verdict comment containing both markers:
-        # <!-- opencode-pr-review -->
-        # <!-- reviewed-head: {full_sha} -->
-        #
-        # Do NOT use pull review comment commit_id here. GitHub can rebind inline
-        # comments to the current PR head after later pushes/merges, which causes
-        # false "already reviewed" skips even when this HEAD never received a full
-        # verdict. The verdict marker is the stable source of truth.
-        EXISTING=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-          --paginate \
-          --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"<!-- opencode-pr-review -->\")) and (.body | contains(\"<!-- reviewed-head: ${HEAD_SHA} -->\")))] | length")
-
-        if [ "${EXISTING}" -gt "0" ]; then
-          echo "Loop guard: complete review already exists for commit ${HEAD_SHA} — skipping"
-          gh pr comment "${PR_NUMBER}" \
-            --body "**OpenCode review skipped:** Commit \`${HEAD_SHA:0:7}\` was already fully reviewed. Push a new commit to trigger a re-review."
-          echo "skip=true" >> $GITHUB_OUTPUT
-        else
-          echo "skip=false" >> $GITHUB_OUTPUT
-        fi
-
-    # ── Context preparation (both modes) ────────────────────────────────────
-    - name: Prepare review context
-      if: |
-        steps.pr-info.outputs.skip == 'false' &&
-        steps.preflight.outputs.skip != 'true' &&
-        steps.loop_guard.outputs.skip != 'true' &&
-        steps.security.outputs.skip != 'true'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        bash "${{ github.action_path }}/../scripts/prepare-review-context.sh" \
-          "${{ github.event.issue.number }}" \
-          "${{ github.repository }}"
-
-    # ── Context summary comment ────────────────────────────────────────────
-    - name: Post context summary
-      if: |
-        steps.pr-info.outputs.skip == 'false' &&
-        steps.preflight.outputs.skip != 'true' &&
-        steps.loop_guard.outputs.skip != 'true' &&
-        steps.security.outputs.skip != 'true'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        PR_NUMBER="${{ github.event.issue.number }}"
-        LINE_COUNT=$(wc -l < review_context.md | tr -d ' ')
-
-        DOMAINS=$(grep "^## Domain:" review_context.md | sed 's/^## Domain: //' || true)
-        DOMAIN_COUNT=$(echo "$DOMAINS" | grep -c '[^[:space:]]' || true)
-
-        HAS_RULES=$(grep -cE "^## (AGENTS|CLAUDE)\.md" review_context.md || true)
-        HAS_CROSS=$(grep -c "^## Cross-domain invariants" review_context.md || true)
-
-        ROWS=""
-        while IFS= read -r domain; do
-          [ -z "$domain" ] && continue
-          INV=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Invariants" || true)
-          ARCH=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Architecture" || true)
-          SPEC=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Testspecs" || true)
-          ROWS="${ROWS}| \`${domain}\` | $([ "$INV" -gt 0 ] && echo "✅" || echo "—") | $([ "$ARCH" -gt 0 ] && echo "✅" || echo "—") | $([ "$SPEC" -gt 0 ] && echo "✅" || echo "—") |\n"
-        done <<< "$DOMAINS"
-
-        BASELINE=""
-        [ "$HAS_RULES" -gt 0 ] && BASELINE="Repository rules ✅"
-        [ "$HAS_CROSS" -gt 0 ] && BASELINE="${BASELINE} · Cross-domain invariants ✅"
-        [ -z "$BASELINE" ] && BASELINE="⚠️ No baseline docs found"
-
-        if [ "$DOMAIN_COUNT" -eq 0 ]; then
-          DOMAIN_SECTION="⚠️ **No domains detected** — only baseline context was loaded. Review may lack domain-specific invariants and testspecs."
-        else
-          DOMAIN_SECTION="$(printf "| Domain | Invariants | Architecture | Testspecs |\n|---|---|---|---|\n%b" "$ROWS")"
-        fi
-
-        gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Review context loaded** — %s lines · %s domain(s)\n\n%s\n\n> %s' "$LINE_COUNT" "$DOMAIN_COUNT" "$DOMAIN_SECTION" "$BASELINE")"
-
-    # ── Prepare workspace-local OpenCode instruction files ───────────────────
-    - name: Prepare OpenCode instruction files
-      if: |
-        steps.pr-info.outputs.skip == 'false' &&
-        steps.preflight.outputs.skip != 'true' &&
-        steps.loop_guard.outputs.skip != 'true' &&
-        steps.security.outputs.skip != 'true'
-      shell: bash
-      env:
-        EXTRA_PROMPT: ${{ inputs.extra_prompt }}
-      run: |
-        mkdir -p .opencode .opencode/tmp
-
-        cp "${{ github.action_path }}/../skills/review-pr/SKILL.md" .opencode/review-pr.base.md
-        cp "${{ github.action_path }}/../skills/re-review-pr/SKILL.md" .opencode/re-review-pr.base.md
-
-        cat > .opencode/review-pr.instructions.md <<EOF
-        OpenCode additions:
-        1. OVERRIDE of base skill Phase 4 Step 1: do NOT call \`gh pr comment\` yourself for the verdict, under any circumstance, even though the base skill instructs it. This Action posts your final response as the PR comment automatically. Calling \`gh pr comment\` yourself in addition to returning a final response produces two separate, incomplete comments and breaks the review-completion loop guard.
-        2. Return the ENTIRE PR verdict (all sections from the base skill's Phase 4 template) as your single final response — this is the ONLY place the verdict is emitted. Base skill Phase 4 Step 2 ("output the same verdict to the conversation") still applies.
-        3. All inline comments must still be posted via GitHub API exactly as the base skill instructs.
-        4. Terminate your final response with the following lines, in this exact order, immediately adjacent with no other content between them:
-
-        <!-- reviewed-head: ${{ steps.pr-info.outputs.head_sha }} -->
-        <!-- opencode-pr-review -->
-        <!-- findings-json-start
-        [
-          {
-            "severity": "CRITICAL",
-            "path": "example/file.go",
-            "line": 42,
-            "title": "Short finding title",
-            "body": "Why this is a problem and what breaks downstream.",
-            "suggested_fix": "Concrete fix intent."
-          }
-        ]
-        findings-json-end -->
-
-        5. Every finding posted inline MUST appear in this JSON array. If there are no findings, emit \`[]\`.
-        6. Each finding MUST include \`suggested_fix\` with a concrete actionable fix in 1-2 sentences.
-        7. Comment-only mode: do not edit repository files, do not create patches, do not run formatters, and do not run any git write operations (\`git add\`, \`git commit\`, \`git push\`, \`git checkout -b\`, \`git merge\`, \`git rebase\`). Output must be PR comments only.
-        8. For any scratch files or temporary payloads, use workspace-local paths under \`.opencode/tmp/\`. Never read from or write to \`/tmp\` or any path outside the repository checkout.
-        EOF
-
-        cat > .opencode/re-review-pr.instructions.md <<EOF
-        OpenCode additions:
-        1. OVERRIDE of base skill Phase 4 Step 1: do NOT call \`gh pr comment\` yourself for the verdict, under any circumstance, even though the base skill instructs it. This Action posts your final response as the PR comment automatically. Calling \`gh pr comment\` yourself in addition to returning a final response produces two separate, incomplete comments and breaks the review-completion loop guard.
-        2. Return the ENTIRE PR verdict as your single final response — this is the ONLY place the verdict is emitted.
-        3. Terminate your final response with the following lines, in this exact order, immediately adjacent with no other content between them:
-
-        <!-- reviewed-head: ${{ steps.pr-info.outputs.head_sha }} -->
-        <!-- opencode-pr-review -->
-        <!-- findings-json-start
-        [
-          {
-            "severity": "CRITICAL",
-            "path": "example/file.go",
-            "line": 42,
-            "title": "Short finding title",
-            "body": "Why this is a problem and what breaks downstream.",
-            "suggested_fix": "Concrete fix intent."
-          }
-        ]
-        findings-json-end -->
-
-        4. Include ALL new findings from re-review in this JSON array. If there are no findings, emit \`[]\`.
-        5. Each finding MUST include \`suggested_fix\`.
-        6. Comment-only mode: do not edit repository files, do not create patches, and do not run any git write operations (\`git add\`, \`git commit\`, \`git push\`, \`git checkout -b\`, \`git merge\`, \`git rebase\`). Output must be PR comments only.
-        7. For any scratch files or temporary payloads, use workspace-local paths under \`.opencode/tmp/\`. Never read from or write to \`/tmp\` or any path outside the repository checkout.
-        EOF
-
-        cat .opencode/review-pr.base.md .opencode/review-pr.instructions.md > .opencode/review-pr.opencode.md
-        cat .opencode/re-review-pr.base.md .opencode/re-review-pr.instructions.md > .opencode/re-review-pr.opencode.md
-
-        if [ -n "${EXTRA_PROMPT}" ]; then
-          {
-            printf '\n\n## Repository rules\n\n'
-            printf '%s\n' "${EXTRA_PROMPT}"
-          } >> .opencode/review-pr.opencode.md
-          {
-            printf '\n\n## Repository rules\n\n'
-            printf '%s\n' "${EXTRA_PROMPT}"
-          } >> .opencode/re-review-pr.opencode.md
-        fi
-
-    # ── Guard: review mode must stay comment-only / clean ────────────────────
-    - name: Ensure review workspace is clean before OpenCode runs
-      if: |
-        steps.pr-info.outputs.skip == 'false' &&
-        steps.preflight.outputs.skip != 'true' &&
-        steps.loop_guard.outputs.skip != 'true' &&
-        steps.security.outputs.skip != 'true'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        if [ -n "$(git status --porcelain)" ]; then
-          echo "::error::Review workspace is dirty before OpenCode starts. Comment-only review mode forbids git writes."
-          git status --short
-          gh pr comment "${{ github.event.issue.number }}" \
-            --repo "${{ github.repository }}" \
-            --body "**OpenCode review aborted:** workspace became dirty before review started. Comment-only review mode forbids git add/commit/push. Check scratch-file handling in the action."
-          exit 1
-        fi
-
-    # ── Full review (first-time) ─────────────────────────────────────────────
-    - name: Run full review
-      if: |
-        steps.pr-info.outputs.skip == 'false' &&
-        (steps.pr-info.outputs.mode == 'review' || steps.preflight.outputs.mode_override == 'review') &&
-        steps.loop_guard.outputs.skip != 'true'
-      uses: anomalyco/opencode/github@v1.17.6
-      env:
-        GITHUB_TOKEN: ${{ inputs.github_token }}
-        TMPDIR: ${{ github.workspace }}/.opencode/tmp
-      with:
-        model: ${{ inputs.model }}
-        variant: ${{ inputs.variant }}
-        mentions: ${{ inputs.mentions }}
-        share: ${{ inputs.share }}
-        use_github_token: ${{ inputs.use_github_token }}
-        prompt: |
-          AUTOMATED MODE: You are running as a GitHub Actions bot.
-          Skip Phase 2.5 (Human Approval Gate) — post all findings directly without waiting for approval.
-          Do not ask any questions. Complete all phases through Phase 4 (Emit Verdict) without interruption.
-          REVIEWER_LOGIN is 'github-actions[bot]'.
-          The PR URL is: ${{ steps.pr-info.outputs.pr_url }}
-
-          FIRST: Read the workspace-local file ".opencode/review-pr.opencode.md" and follow all its instructions exactly.
-
-    # ── Re-review (subsequent /review after prior feedback) ─────────────────
-    - name: Run re-review
-      if: |
-        steps.pr-info.outputs.skip == 'false' &&
-        steps.pr-info.outputs.mode == 're-review' &&
-        steps.preflight.outputs.skip != 'true' &&
-        steps.preflight.outputs.mode_override != 'review' &&
-        steps.security.outputs.skip != 'true'
-      uses: anomalyco/opencode/github@v1.17.6
-      env:
-        GITHUB_TOKEN: ${{ inputs.github_token }}
-        TMPDIR: ${{ github.workspace }}/.opencode/tmp
-      with:
-        model: ${{ inputs.model }}
-        variant: ${{ inputs.variant }}
-        mentions: ${{ inputs.mentions }}
-        share: ${{ inputs.share }}
-        use_github_token: ${{ inputs.use_github_token }}
-        prompt: |
-          AUTOMATED MODE: You are running as a GitHub Actions bot.
-          Skip Phase 3 approval gate — automatically proceed with the classification table without waiting for YES.
-          Skip Phase 7 approval gate — automatically post all new findings without waiting for YES.
-          All other phases execute exactly as documented in the skill.
-          REVIEWER_LOGIN is 'github-actions[bot]'.
-          The PR URL is: ${{ steps.pr-info.outputs.pr_url }}
-
-          FIRST: Read the workspace-local file ".opencode/re-review-pr.opencode.md" and follow all its instructions exactly.
-
-    # ── Verify review comment is posted ─────────────────────────────────────
-    - name: Verify review comment is posted
-      id: review-comment-id
-      if: |
-        steps.pr-info.outputs.skip != 'true' &&
-        steps.preflight.outputs.skip != 'true' &&
-        steps.loop_guard.outputs.skip != 'true' &&
-        steps.security.outputs.skip != 'true'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-        PR_NUMBER: ${{ github.event.issue.number }}
-        HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
-      run: |
-        found=0
-        for i in $(seq 6); do
-          comment_id=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --paginate \
-            --jq "map(select(.body | contains(\"${HEAD_SHA}\") and contains(\"/actions/runs/${{ github.run_id }}\"))) | sort_by(.created_at) | last | .id // empty")
-          if [ -n "${comment_id}" ]; then
-            gh api "repos/${{ github.repository }}/issues/comments/${comment_id}" \
-              --jq '.body' | \
-              sed 's/\[github run\]/[View workflow run]/' | \
-              jq -Rs '{body: .}' | \
-              gh api "repos/${{ github.repository }}/issues/comments/${comment_id}" --method PATCH --input -
-            found=1
-            break
-          fi
-          sleep 5
-        done
-        if [ "${found}" -eq 0 ]; then
-          echo "::error::OpenCode summary comment not found after 6 retries — review may have silently failed"
-          exit 1
-        fi
-
-    # ── Post failure comment ────────────────────────────────────────────────
-    - name: Post failure comment
-      if: failure() || cancelled()
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        echo "::group::Post failure comment"
-        for i in $(seq 3); do
-          if gh pr comment "${{ github.event.issue.number }}" \
-            --repo "${{ github.repository }}" \
-            --body "**OpenCode review failed unexpectedly.** Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."; then
-            echo "Failure comment posted"
-            break
-          fi
-          echo "Attempt ${i}/3 failed, retrying in 5s..."
-          sleep 5
-        done
-        echo "::endgroup::"
+        set -euo pipefail
+        serena_home="$RUNNER_TEMP/serena"
+        node "$ACTION_PATH/../scripts/prepare-serena.mjs" "$ENABLE_SERENA" "$SERENA_VERSION" "$serena_home" "$PWD" "$ANALYSIS_INPUT" "$RUNNER_TEMP/serena-status.json" "$ACTION_PATH/../scripts/setup-serena.sh" "$ACTION_PATH/../poc/serena/readiness-report.md"
+        API_KEY_NAME="$(node "$ACTION_PATH/../scripts/resolve-provider-env.mjs" "$OPENCODE_MODEL" "$API_KEY_OVERRIDE")"
+        export API_KEY_NAME
+        export "${API_KEY_NAME}=${API_KEY_VALUE}"
+        node -e 'const fs=require("fs");const p=process.argv[1],v=JSON.parse(fs.readFileSync(p));v.executable=process.env.RUNNER_TEMP+"/opencode/bin/opencode";v.model=process.env.OPENCODE_MODEL;v.providerKeyEnv=process.env.API_KEY_NAME;fs.writeFileSync(p,JSON.stringify(v))' "$ANALYSIS_INPUT"
+        node "$ACTION_PATH/../scripts/run-review-analysis.mjs" "$ANALYSIS_INPUT"
