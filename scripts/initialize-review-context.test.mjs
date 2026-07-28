@@ -187,3 +187,8 @@ test("preserves owner-selected values in an existing managed manifest", async ()
   assert.equal(after, before);
   assert.deepEqual(validateManifest(parseManifest(after)), expected);
 });
+
+test("backend fixture workflow declares read-only contents permission", async () => {
+  const workflow = await readFile(path.join(fixtureRoot, "backend/.github/workflows/ci.yml"), "utf8");
+  assert.match(workflow, /permissions:\n  contents: read/);
+});

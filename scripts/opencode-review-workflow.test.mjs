@@ -3,6 +3,27 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const workflowPath = new URL("../.github/workflows/opencode-review.yml", import.meta.url);
+const actionPath = new URL("../opencode-review/action.yml", import.meta.url);
+
+function runScripts(source) {
+  return [...source.matchAll(/^\s+run:\s*(?:\|\n)?([\s\S]*?)(?=^\s+(?:env:|working-directory:|with:|uses:|run:|- name:|- uses:|if:|id:)|\s*$)/gm)].map((match) => match[0]);
+}
+
+test("composite action passes its paths and inputs through environment variables", async () => {
+  const action = await readFile(actionPath, "utf8");
+  for (const script of runScripts(action)) assert.doesNotMatch(script, /\$\{\{/);
+  for (const variable of ["ACTION_PATH", "ANALYSIS_INPUT", "OPENCODE_DOWNLOAD_URL", "OPENCODE_SHA256", "OPENCODE_VERSION", "API_KEY_VALUE", "API_KEY_OVERRIDE", "OPENCODE_MODEL", "OPENCODE_VARIANT", "ENABLE_SERENA", "SERENA_VERSION"]) {
+    assert.match(action, new RegExp(`${variable}: \\$\\{\\{`));
+  }
+});
+
+test("reusable workflow passes dynamic run values through environment variables", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+  for (const script of runScripts(workflow)) assert.doesNotMatch(script, /\$\{\{/);
+  for (const variable of ["TOOLKIT_SHA", "BASE_SHA", "HEAD_SHA", "PREFLIGHT_CHECKSUM", "ANALYSIS_CHECKSUM", "PREFLIGHT_RESULT", "ANALYSIS_RESULT", "PUBLISH_RESULT"]) {
+    assert.match(workflow, new RegExp(`${variable}: \\$\\{\\{`));
+  }
+});
 
 test("reusable workflow preserves the gated job graph and secret boundaries", async () => {
   const workflow = await readFile(workflowPath, "utf8");
@@ -195,7 +216,7 @@ test("overlapping runs cancel and finalizer neither reports superseded cancellat
   assert.match(workflow, /^concurrency:\n  group:.*pull_request/m);
   assert.match(workflow, /cancel-in-progress: true/);
   const finalize = workflow.slice(workflow.indexOf("  finalize:"));
-  assert.match(finalize, /needs\.preflight\.result.*failure/);
+  assert.match(finalize, /PREFLIGHT_RESULT.*failure/);
   assert.match(finalize, /cancelled/);
 });
 

@@ -42,21 +42,29 @@ runs:
   steps:
     - name: Install verified OpenCode CLI
       shell: bash
-      run: node "${{ github.action_path }}/../scripts/install-opencode.mjs" "${{ inputs.opencode_download_url }}" "${{ inputs.opencode_sha256 }}" "${{ inputs.opencode_version }}" "$RUNNER_TEMP/opencode/bin/opencode"
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        OPENCODE_DOWNLOAD_URL: ${{ inputs.opencode_download_url }}
+        OPENCODE_SHA256: ${{ inputs.opencode_sha256 }}
+        OPENCODE_VERSION: ${{ inputs.opencode_version }}
+      run: node "$ACTION_PATH/../scripts/install-opencode.mjs" "$OPENCODE_DOWNLOAD_URL" "$OPENCODE_SHA256" "$OPENCODE_VERSION" "$RUNNER_TEMP/opencode/bin/opencode"
     - name: Run safe headless analysis
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
+        ANALYSIS_INPUT: ${{ inputs.analysis_input }}
         API_KEY_VALUE: ${{ inputs.api_key }}
         API_KEY_OVERRIDE: ${{ inputs.api_key_env }}
         OPENCODE_MODEL: ${{ inputs.model }}
+        OPENCODE_VARIANT: ${{ inputs.variant }}
         ENABLE_SERENA: ${{ inputs.enable_serena }}
         SERENA_VERSION: ${{ inputs.serena_version }}
       run: |
         set -euo pipefail
         serena_home="$RUNNER_TEMP/serena"
-        node "${{ github.action_path }}/../scripts/prepare-serena.mjs" "$ENABLE_SERENA" "$SERENA_VERSION" "$serena_home" "$PWD" "${{ inputs.analysis_input }}" "$RUNNER_TEMP/serena-status.json" "${{ github.action_path }}/../scripts/setup-serena.sh" "${{ github.action_path }}/../poc/serena/readiness-report.md"
-        API_KEY_NAME="$(node "${{ github.action_path }}/../scripts/resolve-provider-env.mjs" "${OPENCODE_MODEL}" "${API_KEY_OVERRIDE}")"
+        node "$ACTION_PATH/../scripts/prepare-serena.mjs" "$ENABLE_SERENA" "$SERENA_VERSION" "$serena_home" "$PWD" "$ANALYSIS_INPUT" "$RUNNER_TEMP/serena-status.json" "$ACTION_PATH/../scripts/setup-serena.sh" "$ACTION_PATH/../poc/serena/readiness-report.md"
+        API_KEY_NAME="$(node "$ACTION_PATH/../scripts/resolve-provider-env.mjs" "$OPENCODE_MODEL" "$API_KEY_OVERRIDE")"
         export API_KEY_NAME
         export "${API_KEY_NAME}=${API_KEY_VALUE}"
-        node -e 'const fs=require("fs");const p=process.argv[1],v=JSON.parse(fs.readFileSync(p));v.executable=process.env.RUNNER_TEMP+"/opencode/bin/opencode";v.model=process.env.OPENCODE_MODEL;v.providerKeyEnv=process.env.API_KEY_NAME;fs.writeFileSync(p,JSON.stringify(v))' "${{ inputs.analysis_input }}"
-        node "${{ github.action_path }}/../scripts/run-review-analysis.mjs" "${{ inputs.analysis_input }}"
+        node -e 'const fs=require("fs");const p=process.argv[1],v=JSON.parse(fs.readFileSync(p));v.executable=process.env.RUNNER_TEMP+"/opencode/bin/opencode";v.model=process.env.OPENCODE_MODEL;v.providerKeyEnv=process.env.API_KEY_NAME;fs.writeFileSync(p,JSON.stringify(v))' "$ANALYSIS_INPUT"
+        node "$ACTION_PATH/../scripts/run-review-analysis.mjs" "$ANALYSIS_INPUT"
