@@ -12,9 +12,17 @@ require_in_file() {
   fi
 }
 
+require_action_version() {
+  local file="$1" action="$2" version="$3"
+  if ! grep -Eq "${action}@([0-9a-f]{40} # )?${version}" "${file}"; then
+    printf 'expected %s to pin %s at immutable SHA or deployed %s tag\n' "${file}" "${action}" "${version}" >&2
+    exit 1
+  fi
+}
+
 # ── Core wiring ───────────────────────────────────────────────────────────────
 require_in_file "${action_file}" "using: composite"
-require_in_file "${action_file}" "anomalyco/opencode/github@v1.17.6"
+require_action_version "${action_file}" "anomalyco/opencode/github" "v1.17.6"
 require_in_file "${action_file}" "default: opencode-go/deepseek-v4-pro"
 require_in_file "${action_file}" "mentions: /autofix"
 
@@ -75,7 +83,7 @@ printf 'OpenCode autofix action contract is satisfied.\n'
 reusable_workflow=".github/workflows/opencode-autofix.yml"
 
 require_in_file "${reusable_workflow}" "workflow_call"
-require_in_file "${reusable_workflow}" "anomalyco/opencode/github@v1.17.6"
+require_in_file "${reusable_workflow}" 'deliberately NOT anomalyco/opencode/github'
 
 # Job graph: fix -> {lint, build, test} -> publish.
 for job in "  fix:" "  lint:" "  build:" "  test:" "  publish:"; do

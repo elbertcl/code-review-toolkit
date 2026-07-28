@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  node-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@1e60f620b9541d7c243d3c8ba08f9218b7f891be
+        with:
+          node-version: "20"
+      - run: node --test scripts/lib/*.test.mjs scripts/*.test.mjs
+      - run: bash scripts/check-opencode-review-action.sh
+      - run: bash scripts/check-opencode-autofix-action.sh
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: git ls-files -z '*.sh' | xargs -0 shellcheck
+
+  workflow-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Require immutable action pins
+        run: node scripts/check-immutable-action-pins.mjs
+      - name: Run actionlint
+        uses: raven-actions/actionlint@01fce4f43a270a612932cb1c64d40505a029f821
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@f52a838cfabf134edcbaa7c8b3677dde20045018
