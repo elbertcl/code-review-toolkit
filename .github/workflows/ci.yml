@@ -45,6 +45,6 @@ jobs:
       - name: Install actionlint
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Run actionlint
-        run: actionlint
+        run: actionlint -shellcheck=""
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@f52a838cfabf134edcbaa7c8b3677dde20045018

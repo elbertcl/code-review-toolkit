@@ -154,7 +154,9 @@ jobs:
         env: {EXPECTED_HEAD_SHA: '${{ needs.preflight.outputs.head_sha }}'}
         working-directory: consumer
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with: {name: preflight-result-${{ github.run_id }}, path: '${{ runner.temp }}/preflight-download'}
+        with:
+          name: preflight-result-${{ github.run_id }}
+          path: ${{ runner.temp }}/preflight-download
       - name: Validate and extract preflight result
         run: |
           set -euo pipefail
@@ -215,7 +217,9 @@ jobs:
       - name: Verify immutable toolkit checkout
         run: node toolkit/scripts/validate-toolkit-sha.mjs "${{ inputs.toolkit_sha }}" toolkit
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with: {name: analysis-result-${{ github.run_id }}, path: '${{ runner.temp }}/analysis-download'}
+        with:
+          name: analysis-result-${{ github.run_id }}
+          path: ${{ runner.temp }}/analysis-download
       - name: Validate, publish, and verify
         run: |
           set -euo pipefail
@@ -249,7 +253,9 @@ jobs:
           persist-credentials: false
       - run: node toolkit/scripts/validate-toolkit-sha.mjs "${{ inputs.toolkit_sha }}" toolkit
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with: {name: preflight-result-${{ github.run_id }}, path: '${{ runner.temp }}/preflight-download'}
+        with:
+          name: preflight-result-${{ github.run_id }}
+          path: ${{ runner.temp }}/preflight-download
       - name: Publish checksummed blocked result
         env:
           GITHUB_TOKEN: ${{ github.token }}
