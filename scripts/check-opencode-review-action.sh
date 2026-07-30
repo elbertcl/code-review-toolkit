@@ -24,31 +24,40 @@ reject_in_file() {
   fi
 }
 
-require_in_file "${action_file}" "Run safe headless analysis"
-require_in_file "scripts/run-review-analysis.mjs" "provider API key environment is missing or invalid"
-require_in_file "scripts/run-review-analysis.mjs" 'edit: "deny"'
-require_in_file "scripts/run-review-analysis.mjs" 'bash: "deny"'
-require_in_file "scripts/run-review-analysis.mjs" 'webfetch: "deny"'
-require_in_file "scripts/run-review-analysis.mjs" 'external_directory: "deny"'
-require_in_file "${action_file}" "run-review-analysis.mjs"
-require_in_file "${action_file}" "install-opencode.mjs"
-require_in_file "${action_file}" "opencode_sha256"
-reject_in_file "${action_file}" "anomalyco/opencode/github"
-reject_in_file "${action_file}" "gh api"
+require_in_file "${action_file}" "anomalyco/opencode/github@v1.17.6"
+require_in_file "${action_file}" "default: opencode-go/deepseek-v4-pro"
+require_in_file "${action_file}" "Prepare OpenCode instruction files"
+require_in_file "${action_file}" "Ensure review workspace is clean before OpenCode runs"
+require_in_file "${action_file}" "Comment-only review mode forbids git writes"
+require_in_file "${action_file}" "Output must be PR comments only."
+require_in_file "${action_file}" ".opencode/review-pr.opencode.md"
+require_in_file "${action_file}" ".opencode/re-review-pr.opencode.md"
+require_in_file "${action_file}" ".opencode/tmp"
+require_in_file "${action_file}" 'Never read from or write to `/tmp`'
+require_in_file "${action_file}" 'TMPDIR: ${{ github.workspace }}/.opencode/tmp'
+require_in_file "${action_file}" 'cp "${{ github.action_path }}/../skills/review-pr/SKILL.md" .opencode/review-pr.base.md'
+require_in_file "${action_file}" 'cp "${{ github.action_path }}/../skills/re-review-pr/SKILL.md" .opencode/re-review-pr.base.md'
+require_in_file "${action_file}" "inline review comment"
+require_in_file "${action_file}" "OpenCode additions:"
+require_in_file "${action_file}" "Return the final PR verdict as your final response"
+require_in_file "${action_file}" "<!-- opencode-pr-review -->"
+require_in_file "${action_file}" "<!-- findings-json-start"
+require_in_file "${action_file}" "findings-json-end -->"
+require_in_file "${action_file}" "## Repository rules"
+require_in_file "${action_file}" "Verify review comment is posted"
+require_in_file "${action_file}" "HEAD_SHA"
+require_in_file "${action_file}" "github run"
+require_in_file "${action_file}" "[View workflow run]"
+reject_in_file "${action_file}" 'FIRST: Read the file "${{ github.action_path }}/../skills/review-pr/SKILL.md"'
+reject_in_file "${action_file}" 'FIRST: Read the file "${{ github.action_path }}/../skills/re-review-pr/SKILL.md"'
 
-require_in_file "skills/review-pr/SKILL.md" "Never invoke \`gh\`"
-require_in_file "skills/re-review-pr/SKILL.md" "Never invoke \`gh\`"
-require_in_file "scripts/run-review-analysis.mjs" "ASTRO_FINDINGS_JSON_START"
-require_in_file "scripts/publish-review.mjs" "astro-ai-finding"
-require_in_file "scripts/verify-review-publication.mjs" "opencode-pr-review"
-
-require_in_file "${context_script}" "info/exclude"
+require_in_file "${context_script}" ".git/info/exclude"
 require_in_file "${context_script}" ".opencode/"
-require_in_file "${context_script}" "prepare-review-context.mjs"
-require_in_file "scripts/prepare-review-context.mjs" "REVIEW.md"
-require_in_file "scripts/prepare-review-context.mjs" "review_context.metadata.json"
-require_in_file "scripts/lib/review-manifest.mjs" "backend/security.md"
-require_in_file "scripts/lib/review-manifest.mjs" "backend/sre.md"
-reject_in_file "${context_script}" "Auto-discovering domains"
+require_in_file "${context_script}" "AGENTS.md"
+require_in_file "${context_script}" "CLAUDE.md"
+require_in_file "${context_script}" "## Domain:"
+require_in_file "${context_script}" "docs/invariants"
+require_in_file "${context_script}" "docs/architecture"
+require_in_file "${context_script}" "docs/testspecs"
 
 printf 'OpenCode review action contract is satisfied.\n'

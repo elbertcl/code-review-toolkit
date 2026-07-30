@@ -1,6 +1,0 @@
-{
-  "fixture": "react-component",
-  "language": "typescript",
-  "queries": ["find_symbol:ProductCard", "find_referencing_symbols:ProductCard"],
-  "compatibility_only": true
-}

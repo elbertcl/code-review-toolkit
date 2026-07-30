@@ -1,6 +1,0 @@
-{
-  "fixture": "vue-component",
-  "language": "typescript",
-  "queries": ["get_symbols_overview:ProductCard.vue"],
-  "compatibility_only": true
-}
