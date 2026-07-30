@@ -4,63 +4,15 @@ AI-powered PR review infrastructure for astronautsid repos.
 
 ## Usage
 
-Replace `TOOLKIT_RELEASE_SHA` below with an approved, exact 40-character toolkit commit
-SHA before committing the workflow. The literal token is intentionally invalid and must
-not pass repository pin validation.
+One action, one command:
 
 ```yaml
-- uses: elbertcl/code-review-toolkit/review@TOOLKIT_RELEASE_SHA
+- uses: elbertcl/code-review-toolkit/review@v1
 ```
 
 Comment `/review` on any PR. The action automatically detects:
 - **First-time review** — full review of the entire PR diff
 - **Re-review** — classifies prior threads as resolved/still-open, then reviews only the new diff since the last review
-
-V1 feature branches start from toolkit `v3.1.0` (`db218158`). Consumers must pin the
-tested release commit SHA and include the semantic version in a comment, rather than
-using a mutable tag:
-
-```yaml
-- uses: elbertcl/code-review-toolkit/opencode-review@<future-release-commit-sha> # v3.2.0 (example future release)
-```
-
-Toolkit `v3.1.0` (`db218158`) remains the control and rollback target. Rollback means
-restoring that prior tested release SHA in the consuming workflow. See
-[`docs/v1-operating-decisions.md`](docs/v1-operating-decisions.md) for the V1 limits,
-gates, and operating decisions.
-
-## Metrics dashboard POC
-
-Metrics currently operate as **POC_ONLY**. The manual `Metrics Dashboard POC` workflow
-renders checked-in sanitized fixture metadata into `index.html`, `summary.json`, and
-`audit-sample.json`. It does not collect production GitHub data, run on a schedule,
-deploy Pages, or export to an external sink. See [`docs/metrics.md`](docs/metrics.md),
-[`docs/rollout-checklist.md`](docs/rollout-checklist.md), and
-[`docs/incident-runbook.md`](docs/incident-runbook.md).
-
-Ownership transfer steps are in
-[`docs/migration-to-astronautsid.md`](docs/migration-to-astronautsid.md). A repository
-transfer does not change the `POC_ONLY` verdict or approve production collection.
-
-## PR size baseline
-
-Analyze a repository's human-authored PR sizes with:
-
-```bash
-node scripts/analyze-pr-size.mjs astronautsid/astro-ads-be 2026-04-01 2026-07-28
-```
-
-Recorded output for the Ads sample:
-
-```json
-{
-  "sampleSize": 570,
-  "changedFiles": { "p50": 6, "p90": 26, "p95": 34, "max": 192 },
-  "changedLines": { "p50": 215, "p90": 1486, "p95": 2575, "max": 17704 }
-}
-```
-
-V1 uses rounded p95 limits of **35 changed files** and **2,600 changed lines**.
 
 ## Setup (per consuming repo)
 
@@ -97,8 +49,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # Replace TOOLKIT_RELEASE_SHA with the approved 40-character release commit SHA.
-      - uses: elbertcl/code-review-toolkit/review@TOOLKIT_RELEASE_SHA
+      - uses: elbertcl/code-review-toolkit/review@v1
         with:
           claude_token: ${{ secrets[format('CLAUDE_TOKEN_{0}', github.event.comment.user.login)] }}
 ```
@@ -107,134 +58,44 @@ jobs:
 
 Repo-specific review rules. Section 1 (Business Correctness) varies per repo; Sections 2–3 (Performance, Maintainability) are reusable. See any existing consumer repo for an example.
 
-## Trusted review manifest
+## How domain discovery works
 
-V1 consumers declare exact repository-owned review context in root `REVIEW.md`. The
-toolkit reads the manifest and every declared repository file from the trusted base
-commit with `git show`; PR-head policy changes cannot weaken the current review. The
-fixed organization profile allowlist is `backend/security`, `backend/sre`,
-`frontend/security`, and `frontend/sre`.
-
-````markdown
-<!-- astro-review-manifest:start -->
-```json
-{
-  "schema_version": 1,
-  "profile": "backend",
-  "organization_profiles": ["backend/security", "backend/sre"],
-  "policy_path": "docs/review-dimensions.md",
-  "verification_commands": ["make lint"],
-  "required_context": [{"path":"AGENTS.md","role":"instructions"}],
-  "optional_context": [{"path":"docs/testspecs/display/spec.md","role":"testspec"}],
-  "conditional_context": [{
-    "when_changed": ["internal/domain/admanager/**"],
-    "paths": ["docs/architecture/admanager.md", "docs/invariants/admanager.md"],
-    "role": "invariants"
-  }],
-  "required_checks": [{"name":"Build and Test","category":"test","workflow_file":".github/workflows/ci.yml","workflow_id":123456}],
-  "diff_limits": {"changed_files":40,"changed_lines":1200},
-  "diff_override": {"label":"ai-review-size-approved","authorized_associations":["OWNER","MEMBER"]},
-  "docs_only_paths": ["**/*.md", "docs/**"],
-  "excluded_paths": ["mocks/**", "**/*.pb.go"]
-}
-```
-<!-- astro-review-manifest:end -->
-````
-
-Required and selected conditional files are blocking when missing, unsafe, or marked
-`ASTRO_REVIEW_CONTEXT_INCOMPLETE`. Optional gaps produce `READY_WITH_GAPS`; otherwise
-the result is `READY`. Organization rules take precedence. To keep precedence
-deterministic, repository policy must not contain any mandatory organization rule ID;
-neutral descriptions should refer to "organization rules" without copying an `ORG-*` ID.
-
-The compiler writes `.opencode/tmp/review_context.md` and
-`.opencode/tmp/review_context.metadata.json`. It rejects path traversal, symlinks,
-unsupported glob syntax, and output over the configured byte cap rather than truncating
-required context.
-
-Metadata includes the full validated manifest contract. Workstream 3 consumes
-`required_checks`, diff limits and override policy, docs-only paths, exclusions, and
-verification commands when enforcing the action gate; this compiler only preserves and
-authenticates that contract.
-
-### Deterministic context initialization
-
-Preview a consuming repository's bounded context discovery without changing files:
-
-```bash
-node scripts/initialize-review-context.mjs --root /path/to/consumer
-```
-
-The initializer inspects only root instruction files, bounded `internal/domain/*/` names,
-`docs/architecture/*.md`,
-`docs/invariants/*.md`, `docs/testspecs/*/*.md`, `docs/conventions/*.md`,
-`.github/workflows/*.yml`, and known root stack indicators. It never recursively scans
-arbitrary documentation and never reads or summarizes application source.
-
-After a repository owner reviews the preview, write the managed manifest and missing
-required stubs with:
-
-```bash
-node scripts/initialize-review-context.mjs --root /path/to/consumer --write
-```
-
-The command preserves all existing `REVIEW.md` prose and never deletes files. An existing
-manifest is validated without rewriting owner-selected values, paths, checks, commands,
-or limits. A new manifest uses non-activatable owner placeholders and carries
-`ASTRO_REVIEW_CONTEXT_INCOMPLETE` until an owner supplies measured limits, commands, and
-checks. Workflow names are discovery evidence only; no `app_slug` is guessed. Discovered
-domains receive marked architecture, invariant, and testspec stubs selected conditionally
-by `internal/domain/<name>/**`. Required stubs produce `BLOCKED`, optional stubs produce
-`READY_WITH_GAPS`, and a second write is idempotent (`No changes.`).
-
-See [`skills/initialize-review-context/SKILL.md`](skills/initialize-review-context/SKILL.md)
-for the adoption procedure and `templates/review-context/` for stub wording.
-
-`app_slug` is optional and identifies an app, not a trusted workflow. When provenance
-matters, declare `workflow_file` and optionally `workflow_id`; the gate requires the check
-run's trusted-base workflow identity to match. A name or `github-actions` slug alone is
-not secure provenance. Size overrides require both an association allowlisted by
-`diff_override.authorized_associations` and current write-or-higher repository access.
-The reusable workflow requires `toolkit_sha` to be the exact 40-character release commit,
-checks out consumer code and `elbertcl/code-review-toolkit` into separate directories,
-and verifies that toolkit checkout before executing it. `github.workflow_sha` is not used
-as the cross-repository revision contract: for reusable workflows it identifies the
-workflow run/caller commit, not necessarily a commit available in the separately checked
-out toolkit repository. Private-repository fetches use
-transient HTTP authentication and deepen history only until the gated base/head pair
-has a merge base; credentials are never persisted.
-
-The reusable workflow requires `opencode_version`, `opencode_download_url`, and
-`opencode_sha256`. The URL must be an immutable HTTPS asset under the exact version's
-`/releases/download/v<version>/` path. The workflow downloads it into runner-temporary
-storage, verifies SHA-256 before execution, then verifies `--version`; it never trusts a
-preinstalled `opencode` on `PATH` or runs a mutable installer.
+`scripts/prepare-review-context.sh` discovers domain names at runtime by scanning the consuming repo's own `docs/` structure (`docs/invariants/*.md`, `docs/architecture/*.md`, `docs/testspecs/*/`). No config required — adding a domain doc is all it takes.
 
 ## OpenCode Review
 
-Use the reusable `opencode-review.yml` workflow for the hardened experimental review
-lane. The old step-level example below is the legacy control lane and is not the hardened
-consumer contract.
+Use `opencode-review` when you want OpenCode to review PRs from a `/review` comment. The consuming repo only needs the trigger workflow; review behavior, context preparation, inline comments, and the summary contract live in this toolkit.
 
 ```yaml
+name: OpenCode PR Review
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+  pull-requests: write
+
 jobs:
   review:
-    if: github.event.issue.pull_request != null && github.event.comment.body == '/review'
-    uses: elbertcl/code-review-toolkit/.github/workflows/opencode-review.yml@<approved-release-sha> # approved release
-    with:
-      toolkit_sha: <same-approved-release-sha>
-      model: openrouter/deepseek/deepseek-v4-pro
-      variant: max
-      opencode_version: 1.2.3
-      opencode_download_url: https://github.com/anomalyco/opencode/releases/download/v1.2.3/opencode-linux-x64
-      opencode_sha256: <verified-lowercase-64-character-digest>
-    secrets:
-      api_key: ${{ secrets.REVIEW_AGENT_API_KEY }}
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: elbertcl/code-review-toolkit/opencode-review@v3.1.0
+        with:
+          api_key: ${{ secrets.REVIEW_AGENT_API_KEY }}
+          model: openrouter/deepseek/deepseek-v4-pro
+          use_github_token: true
 ```
-
-`toolkit_sha` cannot safely derive the reusable workflow's own release commit across
-repositories. The consumer must repeat the exact, approved 40-character release SHA;
-arbitrary branch or pre-commit SHAs are not approved pins.
 
 Keep repo-specific review policy in the consuming repo, for example `AGENTS.md`, `docs/review-dimensions.md`, or `.github/instructions/review-depth.instructions.md`.
 
@@ -367,15 +228,10 @@ trigger workflow above:
   cross-repo** Go modules; defaults to the repo `GITHUB_TOKEN`.
 - `context_paths` / `extra_prompt` — point at any repo's own docs/spec.
 
-Autofix remains on the deployed `v3.1.0` context behavior. The V1 trusted manifest and
-`.opencode/tmp/review_context.md` contract apply to the experimental review lane only;
-autofix migration is explicitly outside this workstream.
-
-The hardened `opencode-review` lane requires immutable external action pins. Existing
-control/autofix lanes retain a temporary, exact inventory in
-`docs/legacy-action-pin-exceptions.json`; CI rejects new mutable refs and stale or
-unrecorded exceptions. Those legacy owners must replace each recorded tag with a vetted
-commit SHA before hardened release activation.
+Context is **layered and degrades gracefully**: `AGENTS.md`/`CLAUDE.md` is the universal
+baseline; `docs/invariants|architecture|testspecs` are loaded automatically *if present*
+(reusing `scripts/prepare-review-context.sh`); `context_paths` is the escape hatch for
+repos with a different docs layout. No repo is forced to adopt an opinionated structure.
 
 ### Gate-before-push strategy
 

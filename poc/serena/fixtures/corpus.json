@@ -1,4 +1,0 @@
-[
-  {"fixture":"collect-metrics-symbol","tool":"find_symbol","arguments":{"name_path_pattern":"collectMetrics","relative_path":"scripts/collect-metrics.mjs","include_body":true},"expected":"collectMetrics"},
-  {"fixture":"collect-metrics-references","tool":"find_referencing_symbols","arguments":{"name_path":"collectMetrics","relative_path":"scripts/collect-metrics.mjs"},"expected":"collect-metrics.test.mjs"}
-]
