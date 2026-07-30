@@ -9,7 +9,6 @@ status_file="$(mktemp)"
 trap 'rm -f "$status_file"' EXIT
 serena_home="${SERENA_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/code-review-toolkit/serena}"
 
-bash "$root/scripts/setup-serena.sh" "$revision"
 bash "$root/scripts/check-serena-setup.sh" "$revision" "$status_file"
 status="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).status)' "$status_file")"
 if [[ "$status" != "available" ]]; then

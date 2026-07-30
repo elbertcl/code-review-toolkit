@@ -10,29 +10,6 @@ fi
 serena_home="${SERENA_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/code-review-toolkit/serena}"
 mkdir -p "$serena_home/bin" "$serena_home/cache"
 
-cat >"$serena_home/serena_config.yml" <<EOF
-language_backend: LSP
-gui_log_window: false
-web_dashboard: false
-web_dashboard_open_on_launch: false
-log_level: 30
-trace_lsp_communication: false
-tool_timeout: 20
-base_modes: []
-default_modes: []
-fixed_tools:
-  - get_symbols_overview
-  - find_symbol
-  - find_referencing_symbols
-  - search_for_pattern
-  - find_declaration
-  - find_implementations
-  - get_diagnostics_for_file
-project_serena_folder_location: "$serena_home/projects/\$projectFolderName"
-trusted_project_path_patterns: []
-projects: []
-EOF
-
 cat >"$serena_home/project.yml" <<'YAML'
 project_name: review-target
 ignored_paths:
@@ -77,7 +54,7 @@ cat >"$serena_home/bin/serena-readonly" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export XDG_CACHE_HOME="\${SERENA_HOME:-$serena_home}/cache"
-exec env -i HOME="\${SERENA_HOME:-$serena_home}" PATH="\$PATH" SERENA_HOME="\${SERENA_HOME:-$serena_home}" XDG_CACHE_HOME="\${SERENA_HOME:-$serena_home}/cache" uvx --from "git+https://github.com/oraios/serena.git@$revision" serena start-mcp-server \
+exec env -i HOME="\$HOME" PATH="\$PATH" XDG_CACHE_HOME="\${SERENA_HOME:-$serena_home}/cache" uvx --from "git+https://github.com/oraios/serena.git@$revision" serena start-mcp-server \
   --transport stdio --context "$serena_home/read-only-context.yml" --mode planning --project "\${1:?project path required}" \
   --enable-web-dashboard false --open-web-dashboard false --enable-gui-log-window false --tool-timeout "\${SERENA_TOOL_TIMEOUT_SECONDS:-20}"
 EOF
