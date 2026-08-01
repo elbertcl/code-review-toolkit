@@ -42,6 +42,10 @@ inputs:
     description: Extra consuming-repo review instructions.
     required: false
     default: ""
+  issue_number:
+    description: PR/issue number for workflow_dispatch triggers (leave empty for issue_comment triggers).
+    required: false
+    default: ""
 
 runs:
   using: composite
