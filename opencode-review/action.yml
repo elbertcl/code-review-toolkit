@@ -258,7 +258,7 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         HEAD_SHA="${{ steps.pr-info.outputs.head_sha }}"
-        PR_NUMBER="${{ github.event.issue.number }}"
+        PR_NUMBER="${{ inputs.issue_number || github.event.issue.number }}"
         REPO="${{ github.repository }}"
 
         # Check if a *complete* OpenCode review cycle already exists for this HEAD.
@@ -295,7 +295,7 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         bash "${{ github.action_path }}/../scripts/prepare-review-context.sh" \
-          "${{ github.event.issue.number }}" \
+          "${{ inputs.issue_number || github.event.issue.number }}" \
           "${{ github.repository }}"
 
     # ── Context summary comment ────────────────────────────────────────────
@@ -309,7 +309,7 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        PR_NUMBER="${{ github.event.issue.number }}"
+        PR_NUMBER="${{ inputs.issue_number || github.event.issue.number }}"
         LINE_COUNT=$(wc -l < review_context.md | tr -d ' ')
 
         DOMAINS=$(grep "^## Domain:" review_context.md | sed 's/^## Domain: //' || true)
@@ -439,7 +439,7 @@ runs:
         if [ -n "$(git status --porcelain)" ]; then
           echo "::error::Review workspace is dirty before OpenCode starts. Comment-only review mode forbids git writes."
           git status --short
-          gh pr comment "${{ github.event.issue.number }}" \
+          gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
             --body "**OpenCode review aborted:** workspace became dirty before review started. Comment-only review mode forbids git add/commit/push. Check scratch-file handling in the action."
           exit 1
@@ -509,7 +509,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        PR_NUMBER: ${{ github.event.issue.number }}
+        PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
         HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
       run: |
         found=0
@@ -541,7 +541,7 @@ runs:
       run: |
         echo "::group::Post failure comment"
         for i in $(seq 3); do
-          if gh pr comment "${{ github.event.issue.number }}" \
+          if gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
             --body "**OpenCode review failed unexpectedly.** Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."; then
             echo "Failure comment posted"
