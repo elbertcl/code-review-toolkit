@@ -94,8 +94,8 @@ runs:
         script: |
           const owner = context.repo.owner;
           const repo = context.repo.repo;
-          const issueNumber = context.payload.issue.number;
-          const commentId = context.payload.comment.id;
+          const issueNumber = ${{ inputs.issue_number }} || context.payload.issue.number;
+          const commentId = context.payload.comment ? context.payload.comment.id : null;
           const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
 
           const { data: pr } = await github.rest.pulls.get({
@@ -128,12 +128,14 @@ runs:
           const mode = priorVerdicts.length === 0 ? 'review' : 're-review';
           core.info(`==> Mode: ${mode} (${priorVerdicts.length} prior verdict(s))`);
 
-          await github.rest.reactions.createForIssueComment({
-            owner,
-            repo,
-            comment_id: commentId,
-            content: 'eyes'
-          });
+          if (commentId) {
+            await github.rest.reactions.createForIssueComment({
+              owner,
+              repo,
+              comment_id: commentId,
+              content: 'eyes'
+            });
+          }
 
           const emoji = mode === 'review' ? '🔍' : '🔄';
           const label = mode === 'review' ? 'OpenCode review started' : 'OpenCode re-review started';
