@@ -515,7 +515,7 @@ runs:
         found=0
         for i in $(seq 6); do
           comment_id=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --paginate \
-            --jq "map(select(.body | contains(\"${HEAD_SHA}\") and contains(\"/actions/runs/${{ github.run_id }}\"))) | sort_by(.created_at) | last | .id // empty")
+            --jq "map(select(.body | contains(\"/actions/runs/${{ github.run_id }}\"))) | sort_by(.created_at) | last | .id // empty")
           if [ -n "${comment_id}" ]; then
             gh api "repos/${{ github.repository }}/issues/comments/${comment_id}" \
               --jq '.body' | \
