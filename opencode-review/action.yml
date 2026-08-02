@@ -137,11 +137,12 @@ runs:
             });
           }
 
+          const pocMarker = ${{ inputs.issue_number }} ? ' [Serena POC]' : '';
           const emoji = mode === 'review' ? '🔍' : '🔄';
           const label = mode === 'review' ? 'OpenCode review started' : 'OpenCode re-review started';
           await github.rest.issues.createComment({
             owner, repo, issue_number: issueNumber,
-            body: `${emoji} **${label}** for commit \`${pr.head.sha.slice(0, 7)}\`. [View workflow run](${runUrl})`
+            body: `${emoji} **${label}${pocMarker}** for commit \`${pr.head.sha.slice(0, 7)}\`. [View workflow run](${runUrl})`
           });
 
           core.setOutput('skip',       'false');
