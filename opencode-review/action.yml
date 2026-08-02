@@ -445,6 +445,20 @@ runs:
           exit 1
         fi
 
+    # ── Inject PR context for opencode (workflow_dispatch) ──────────────────
+    # opencode github run reads context.payload.issue.number from the event file
+    # at startup. For workflow_dispatch, inject it so the review posts to the
+    # correct PR. Issue_comment triggers already have the context — skip.
+    - name: Inject PR context for opencode
+      if: inputs.issue_number != ''
+      shell: bash
+      run: |
+        jq '. + { issue: { number: ($issueNum|tonumber), pull_request: {} } }' \
+          --arg issueNum "${{ inputs.issue_number }}" \
+          "$GITHUB_EVENT_PATH" > /tmp/event.json
+        mv /tmp/event.json "$GITHUB_EVENT_PATH"
+        echo "Injected issue context for opencode: issue.number=${{ inputs.issue_number }}"
+
     # ── Full review (first-time) ─────────────────────────────────────────────
     - name: Run full review
       if: |
