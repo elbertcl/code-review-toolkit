@@ -46,6 +46,14 @@ inputs:
     description: PR/issue number for workflow_dispatch triggers (leave empty for issue_comment triggers).
     required: false
     default: ""
+  verdict_marker:
+    description: HTML comment marker identifying a completed review verdict (used in mode detection and loop guard).
+    required: false
+    default: "<!-- opencode-pr-review -->"
+  head_marker:
+    description: HTML comment marker identifying the reviewed HEAD SHA (used in loop guard and verify).
+    required: false
+    default: "<!-- reviewed-head:"
 
 runs:
   using: composite
@@ -115,15 +123,16 @@ runs:
             return;
           }
 
-          // Detect mode: search for prior <!-- opencode-pr-review --> comments.
-          // An opencode-pr-review marker is the definitive signal that a full
+          // Detect mode: search for prior verdict marker comments.
+          // The verdict marker is the definitive signal that a full
           // OpenCode review cycle completed on this PR.
+          const verdictMarker = '${{ inputs.verdict_marker }}';
           const { data: comments } = await github.rest.issues.listComments({
             owner, repo, issue_number: issueNumber, per_page: 100
           });
           const priorVerdicts = comments.filter(c =>
             c.user.login === 'github-actions[bot]' &&
-            c.body.includes('<!-- opencode-pr-review -->')
+            c.body.includes(verdictMarker)
           );
           const mode = ${{ inputs.issue_number }} ? 'review' : (priorVerdicts.length === 0 ? 'review' : 're-review');
           core.info(`==> Mode: ${mode} (${priorVerdicts.length} prior verdict(s))`);
@@ -183,13 +192,15 @@ runs:
             const { data: allIssueComments } = await github.rest.issues.listComments({
               owner, repo, issue_number: prNum, per_page: 100
             });
+            const verdictMarker = '${{ inputs.verdict_marker }}';
+            const headMarker = '${{ inputs.head_marker }}';
             const verdictComments = allIssueComments
-              .filter(c => c.user.login === 'github-actions[bot]' && c.body.includes('<!-- opencode-pr-review -->') && c.body.includes('<!-- reviewed-head:'))
+              .filter(c => c.user.login === 'github-actions[bot]' && c.body.includes(verdictMarker) && c.body.includes(headMarker))
               .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
             let lastVerdictSha = null;
             if (verdictComments.length > 0) {
-              const match = verdictComments[0].body.match(/<!-- reviewed-head: ([a-f0-9]+) -->/);
+              const match = verdictComments[0].body.match(new RegExp(headMarker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' ([a-f0-9]+) -->'));
               if (match) lastVerdictSha = match[1];
             }
 
@@ -215,8 +226,8 @@ runs:
           });
           const verdictForCurrentHead = issueComments.some(c =>
             c.user.login === 'github-actions[bot]' &&
-            c.body.includes('<!-- opencode-pr-review -->') &&
-            c.body.includes(`<!-- reviewed-head: ${currentHeadSha} -->`)
+            c.body.includes(verdictMarker) &&
+            c.body.includes(`${headMarker} ${currentHeadSha} -->`)
           );
 
           if (verdictForCurrentHead) {
@@ -263,9 +274,7 @@ runs:
         REPO="${{ github.repository }}"
 
         # Check if a *complete* OpenCode review cycle already exists for this HEAD.
-        # A complete cycle is proven by a verdict comment containing both markers:
-        # <!-- opencode-pr-review -->
-        # <!-- reviewed-head: {full_sha} -->
+        # A complete cycle is proven by a verdict comment containing both markers.
         #
         # Do NOT use pull review comment commit_id here. GitHub can rebind inline
         # comments to the current PR head after later pushes/merges, which causes
@@ -273,7 +282,7 @@ runs:
         # verdict. The verdict marker is the stable source of truth.
         EXISTING=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
           --paginate \
-          --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"<!-- opencode-pr-review -->\")) and (.body | contains(\"<!-- reviewed-head: ${HEAD_SHA} -->\")))] | length")
+          --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${{ inputs.verdict_marker }}\")) and (.body | contains(\"${{ inputs.head_marker }} ${HEAD_SHA} -->\")))] | length")
 
         if [ "${EXISTING}" -gt "0" ]; then
           echo "Loop guard: complete review already exists for commit ${HEAD_SHA} — skipping"
@@ -364,8 +373,8 @@ runs:
         3. All inline comments must still be posted via GitHub API exactly as the base skill instructs.
         4. Terminate your final response with the following lines, in this exact order, immediately adjacent with no other content between them:
 
-        <!-- reviewed-head: ${{ steps.pr-info.outputs.head_sha }} -->
-        <!-- opencode-pr-review -->
+        ${{ inputs.head_marker }} ${{ steps.pr-info.outputs.head_sha }} -->
+        ${{ inputs.verdict_marker }}
         <!-- findings-json-start
         [
           {
@@ -391,8 +400,8 @@ runs:
         2. Return the ENTIRE PR verdict as your single final response — this is the ONLY place the verdict is emitted.
         3. Terminate your final response with the following lines, in this exact order, immediately adjacent with no other content between them:
 
-        <!-- reviewed-head: ${{ steps.pr-info.outputs.head_sha }} -->
-        <!-- opencode-pr-review -->
+        ${{ inputs.head_marker }} ${{ steps.pr-info.outputs.head_sha }} -->
+        ${{ inputs.verdict_marker }}
         <!-- findings-json-start
         [
           {
