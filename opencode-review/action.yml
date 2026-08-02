@@ -125,7 +125,7 @@ runs:
             c.user.login === 'github-actions[bot]' &&
             c.body.includes('<!-- opencode-pr-review -->')
           );
-          const mode = priorVerdicts.length === 0 ? 'review' : 're-review';
+          const mode = ${{ inputs.issue_number }} ? 'review' : (priorVerdicts.length === 0 ? 'review' : 're-review');
           core.info(`==> Mode: ${mode} (${priorVerdicts.length} prior verdict(s))`);
 
           if (commentId) {
