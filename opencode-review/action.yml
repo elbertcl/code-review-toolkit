@@ -54,6 +54,10 @@ inputs:
     description: HTML comment marker identifying the reviewed HEAD SHA (used in loop guard and verify).
     required: false
     default: "<!-- reviewed-head:"
+  skip_context:
+    description: Skip the toolkit's built-in context preparation (use when the caller provides its own compiled context at review_context.md).
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -299,7 +303,8 @@ runs:
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
-        steps.security.outputs.skip != 'true'
+        steps.security.outputs.skip != 'true' &&
+        inputs.skip_context != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -314,7 +319,8 @@ runs:
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
-        steps.security.outputs.skip != 'true'
+        steps.security.outputs.skip != 'true' &&
+        inputs.skip_context != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
