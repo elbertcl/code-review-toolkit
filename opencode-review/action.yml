@@ -58,6 +58,18 @@ inputs:
     description: Skip the toolkit's built-in context preparation (use when the caller provides its own compiled context at review_context.md).
     required: false
     default: "false"
+  serena:
+    description: Enable Serena MCP symbol lookup during review (fail-open if unavailable).
+    required: false
+    default: "true"
+  serena_sha:
+    description: Exact 40-char commit SHA of oraios/serena to install.
+    required: false
+    default: "dd12fa032f473a53595763b8d731817e19c15475"
+  fail_closed_context:
+    description: Abort the review when compiled context status is BLOCKED.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -299,6 +311,7 @@ runs:
 
     # ── Context preparation (both modes) ────────────────────────────────────
     - name: Prepare review context
+      id: context
       if: |
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -308,10 +321,36 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+        REPO: ${{ github.repository }}
       run: |
-        bash "${{ github.action_path }}/../scripts/prepare-review-context.sh" \
-          "${{ inputs.issue_number || github.event.issue.number }}" \
-          "${{ github.repository }}"
+        BASE_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.base.sha')
+        HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha')
+        for scratch in "review_context.md" ".opencode/"; do
+          grep -Fxq "$scratch" .git/info/exclude 2>/dev/null || echo "$scratch" >> .git/info/exclude
+        done
+        gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' \
+          | node -e "process.stdout.write(JSON.stringify(require('fs').readFileSync(0,'utf8').split('\n').filter(Boolean)))" \
+          > "${RUNNER_TEMP}/changed-files.json"
+        set +e
+        node "${{ github.action_path }}/context/prepare-review-context.mjs" \
+          --workspace "$PWD" \
+          --trusted-ref "$BASE_SHA" \
+          --changed-files "${RUNNER_TEMP}/changed-files.json" \
+          --org-contexts-dir "${{ github.action_path }}/context/contexts" \
+          --max-bytes 500000 | tee "${RUNNER_TEMP}/context-output.txt"
+        STATUS_LINE=$(grep -o 'REVIEW_CONTEXT_STATUS=[A-Z_]*' "${RUNNER_TEMP}/context-output.txt" | head -1 | cut -d= -f2)
+        set -e
+        echo "verdict=${STATUS_LINE:-BLOCKED}" >> "$GITHUB_OUTPUT"
+        echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
+        echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+        cp "$PWD/.opencode/tmp/review_context.md" "$PWD/review_context.md" 2>/dev/null || true
+        if [ "${{ inputs.fail_closed_context }}" = "true" ] && [ "${STATUS_LINE}" = "BLOCKED" ]; then
+          echo "::error::Compiled review context is BLOCKED — required context is missing or incomplete."
+          gh pr comment "$PR_NUMBER" --repo "$REPO" \
+            --body "**OpenCode review aborted:** required review context is missing or incomplete (status BLOCKED). Run the \`initialize-review-context\` skill and fill required gap stubs."
+          exit 1
+        fi
 
     # ── Context summary comment ────────────────────────────────────────────
     - name: Post context summary
@@ -326,35 +365,49 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         PR_NUMBER="${{ inputs.issue_number || github.event.issue.number }}"
+        STATUS="${{ steps.context.outputs.verdict }}"
+        SOURCES=$(grep -c "^## Source: " review_context.md || echo 0)
         LINE_COUNT=$(wc -l < review_context.md | tr -d ' ')
+        gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Review context compiled** — status \`%s\` · %s source(s) · %s lines' "$STATUS" "$SOURCES" "$LINE_COUNT")"
 
-        DOMAINS=$(grep "^## Domain:" review_context.md | sed 's/^## Domain: //' || true)
-        DOMAIN_COUNT=$(echo "$DOMAINS" | grep -c '[^[:space:]]' || true)
-
-        HAS_RULES=$(grep -cE "^## (AGENTS|CLAUDE)\.md" review_context.md || true)
-        HAS_CROSS=$(grep -c "^## Cross-domain invariants" review_context.md || true)
-
-        ROWS=""
-        while IFS= read -r domain; do
-          [ -z "$domain" ] && continue
-          INV=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Invariants" || true)
-          ARCH=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Architecture" || true)
-          SPEC=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Testspecs" || true)
-          ROWS="${ROWS}| \`${domain}\` | $([ "$INV" -gt 0 ] && echo "✅" || echo "—") | $([ "$ARCH" -gt 0 ] && echo "✅" || echo "—") | $([ "$SPEC" -gt 0 ] && echo "✅" || echo "—") |\n"
-        done <<< "$DOMAINS"
-
-        BASELINE=""
-        [ "$HAS_RULES" -gt 0 ] && BASELINE="Repository rules ✅"
-        [ "$HAS_CROSS" -gt 0 ] && BASELINE="${BASELINE} · Cross-domain invariants ✅"
-        [ -z "$BASELINE" ] && BASELINE="⚠️ No baseline docs found"
-
-        if [ "$DOMAIN_COUNT" -eq 0 ]; then
-          DOMAIN_SECTION="⚠️ **No domains detected** — only baseline context was loaded. Review may lack domain-specific invariants and testspecs."
-        else
-          DOMAIN_SECTION="$(printf "| Domain | Invariants | Architecture | Testspecs |\n|---|---|---|---|\n%b" "$ROWS")"
+    # ── Serena MCP setup (fail-open) ─────────────────────────────────────────
+    - name: Set up Serena MCP
+      id: serena
+      if: |
+        inputs.serena == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      run: |
+        SERENA_HOME="$RUNNER_TEMP/serena"
+        STATUS_JSON="$RUNNER_TEMP/serena-status.json"
+        bash "${{ github.action_path }}/serena/install-and-probe.sh" \
+          "${{ inputs.serena_sha }}" "$SERENA_HOME" "$STATUS_JSON" || true
+        STATUS=$(node -pe "try { JSON.parse(require('fs').readFileSync('$STATUS_JSON','utf8')).status } catch { 'unavailable' }")
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        echo "status_json=$STATUS_JSON" >> "$GITHUB_OUTPUT"
+        if [ "$STATUS" = "available" ]; then
+          echo "SERENA_HOME=$SERENA_HOME" >> "$GITHUB_ENV"
+          mkdir -p .opencode
+          if [ -f .opencode/opencode.json ]; then
+            BASE=.opencode/opencode.json
+          else
+            BASE=/dev/stdin
+          fi
+          jq -n --arg home "$SERENA_HOME" '{
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": { "serena": { "type": "local", "command": [($home + "/bin/serena-readonly"), "."], "enabled": true, "timeout": 30000 } },
+            "tools": { "serena*": true }
+          }' > "$RUNNER_TEMP/serena-config.json"
+          if [ -f .opencode/opencode.json ]; then
+            jq -s '.[0] * .[1]' .opencode/opencode.json "$RUNNER_TEMP/serena-config.json" > "$RUNNER_TEMP/merged.json"
+            cp "$RUNNER_TEMP/merged.json" .opencode/opencode.json
+          else
+            cp "$RUNNER_TEMP/serena-config.json" .opencode/opencode.json
+          fi
         fi
-
-        gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Review context loaded** — %s lines · %s domain(s)\n\n%s\n\n> %s' "$LINE_COUNT" "$DOMAIN_COUNT" "$DOMAIN_SECTION" "$BASELINE")"
 
     # ── Prepare workspace-local OpenCode instruction files ───────────────────
     - name: Prepare OpenCode instruction files
@@ -561,6 +614,42 @@ runs:
           echo "::error::OpenCode summary comment not found after 6 retries — review may have silently failed"
           exit 1
         fi
+
+    # ── Emit per-run telemetry (uploaded as an artifact) ─────────────────────
+    - name: Emit review telemetry
+      if: always()
+      shell: bash
+      env:
+        PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+        RUN_ID: ${{ github.run_id }}
+        BASE_SHA: ${{ steps.context.outputs.base_sha }}
+        HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+        CONTEXT_VERDICT: ${{ steps.context.outputs.verdict }}
+        SERENA_STATUS: ${{ steps.serena.outputs.status }}
+        MODE: ${{ steps.pr-info.outputs.mode }}
+      run: |
+        mkdir -p "$RUNNER_TEMP/telemetry"
+        node -e "
+          const fs = require('fs');
+          const row = {
+            pr: Number(process.env.PR_NUMBER),
+            run_id: process.env.RUN_ID,
+            mode: process.env.MODE || null,
+            base_sha: process.env.BASE_SHA || null,
+            head_sha: process.env.HEAD_SHA || null,
+            context: { verdict: process.env.CONTEXT_VERDICT || null },
+            serena: { status: process.env.SERENA_STATUS || 'disabled' }
+          };
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/telemetry/review-run.json', JSON.stringify(row, null, 2) + '\n');
+        "
+
+    - name: Upload telemetry artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: review-telemetry-${{ github.run_id }}
+        path: ${{ runner.temp }}/telemetry/review-run.json
+        if-no-files-found: ignore
 
     # ── Post failure comment ────────────────────────────────────────────────
     - name: Post failure comment
