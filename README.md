@@ -108,20 +108,49 @@ a budgeted (~8KB) reasoning digest that includes:
   as `resolved` (suppressed) and do not generate new inline comments.
 
 **Residual gap:** The 8KB budget ceiling means long or many resolved threads are truncated.
-Unresolved-but-disputed threads (not marked "resolved" in GitHub) are anchor-only — no human
+Unresolved-but-disputed threads (not marked "Resolved" in GitHub) are anchor-only — no human
 reasoning reaches OCR for active discussions where the reviewer has not clicked "Resolve."
 
-### Thin POC lanes
+### Serena context fetcher
 
-All review lanes consume `REVIEW.md` as the single source of truth via the
-toolkit. The consuming repo only adds trigger workflows — no inline compile,
-findings-processing, or OCR-install logic:
+A deterministic MCP stdio client (no LLM) drives Serena headless in CI to produce a bounded
+~2000-char **pointer artifact** for the OCR `--background-file`. The fetcher:
+- Enumerates symbols per changed file via `get_symbols_overview`
+- Resolves cross-file references via `find_referencing_symbols`
+- Caps enumeration by changed-file count (overflow → skip enrichment for overflow files)
+- **Fails open** — if Serena is unavailable, OCR proceeds on diff + rules alone
 
-| Lane | Trigger | Toolkit flags |
-|---|---|---|
-| `/review` (agent+Serena) | `/review` comment | `serena: true` (default) |
-| `/review-serena` (POC) | `/review-serena` comment | `serena: true` |
-| `/review-ocr` (POC) | `/review-ocr` comment | `ocr: true` |
+### `org_profiles` input (required for OCR)
+
+Consuming workflows must pass the organization profiles as a comma-separated input:
+
+```yaml
+with:
+  ocr: true
+  org_profiles: backend/security,backend/sre
+```
+
+Valid values: `backend/security`, `backend/sre`, `frontend/security`, `frontend/sre`.
+Multi-profile repos use both backend and frontend profiles; `fullstack` = all four.
+**Fail-closed:** empty or unknown profiles abort the review.
+
+### Tiered defaults
+
+The toolkit ships locked and bounded defaults (`context/defaults/manifest-defaults.json`):
+- **LOCKED** fields (union/replace): `excluded_paths`, `diff_override`, `review_directives` — repos cannot loosen, only add
+- **BOUNDED** fields (ceiling): `diff_limits` (max 100 files / 5000 lines), `docs_only_paths` (union)
+
+Repos omit these fields to inherit; override only with stricter values.
+
+### `REVIEW.example.md`
+
+An annotated example manifest ships in `context/defaults/REVIEW.example.md` for onboarding
+new repos.
+
+### Thin POC lanes (deprecated — OCR is the sole engine in v4.3+)
+
+The OCR engine is the sole review path since v4.3.0. All review trigger workflows funnel
+into one OCR-based lane. The agent lane (`/review`, `/review-serena`) has been removed.
 
 ## Development (TypeScript, v4.2+)
 
