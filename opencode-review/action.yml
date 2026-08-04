@@ -615,6 +615,42 @@ runs:
           exit 1
         fi
 
+    # ── Emit per-run telemetry (uploaded as an artifact) ─────────────────────
+    - name: Emit review telemetry
+      if: always()
+      shell: bash
+      env:
+        PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+        RUN_ID: ${{ github.run_id }}
+        BASE_SHA: ${{ steps.context.outputs.base_sha }}
+        HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+        CONTEXT_VERDICT: ${{ steps.context.outputs.verdict }}
+        SERENA_STATUS: ${{ steps.serena.outputs.status }}
+        MODE: ${{ steps.pr-info.outputs.mode }}
+      run: |
+        mkdir -p "$RUNNER_TEMP/telemetry"
+        node -e "
+          const fs = require('fs');
+          const row = {
+            pr: Number(process.env.PR_NUMBER),
+            run_id: process.env.RUN_ID,
+            mode: process.env.MODE || null,
+            base_sha: process.env.BASE_SHA || null,
+            head_sha: process.env.HEAD_SHA || null,
+            context: { verdict: process.env.CONTEXT_VERDICT || null },
+            serena: { status: process.env.SERENA_STATUS || 'disabled' }
+          };
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/telemetry/review-run.json', JSON.stringify(row, null, 2) + '\n');
+        "
+
+    - name: Upload telemetry artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: review-telemetry-${{ github.run_id }}
+        path: ${{ runner.temp }}/telemetry/review-run.json
+        if-no-files-found: ignore
+
     # ── Post failure comment ────────────────────────────────────────────────
     - name: Post failure comment
       if: failure() || cancelled()
