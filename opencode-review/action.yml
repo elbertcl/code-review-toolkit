@@ -554,9 +554,15 @@ runs:
           import { compileOcrRules } from '\${{ github.action_path }}/dist/ocr/compile-ocr-rules.js';
           import { parseManifest, validateManifest } from '\${{ github.action_path }}/dist/context/lib/review-manifest.js';
           import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-          const manifestText = readFileSync('REVIEW.md', 'utf8');
+          const repoPath = 'REVIEW.md';
+          const fallbackPath = '\${{ github.action_path }}/context/defaults/REVIEW.md';
+          const manifestPath = existsSync(repoPath) ? repoPath : fallbackPath;
+          if (!existsSync(repoPath)) {
+            process.stderr.write('::notice::REVIEW.md not found in repo; using org-default fallback.\n');
+          }
+          const manifestText = readFileSync(manifestPath, 'utf8');
           const manifest = validateManifest(parseManifest(manifestText));
-          const policyBody = readFileSync(manifest.policy_path, 'utf8');
+          const policyBody = existsSync(manifest.policy_path) ? readFileSync(manifest.policy_path, 'utf8') : '';
           let resolvedDirectives = [];
           if (existsSync('/tmp/resolved-directives.json')) {
             resolvedDirectives = JSON.parse(readFileSync('/tmp/resolved-directives.json', 'utf8'));
