@@ -72,3 +72,21 @@ test("compileReviewContext reads org contexts from the action-checkout filesyste
   rmSync(dir, { recursive: true, force: true });
   rmSync(orgDir, { recursive: true, force: true });
 });
+
+test("CLI prints REVIEW_CONTEXT_STATUS and honors --org-contexts-dir", () => {
+  const { dir, sha } = initRepo();
+  const orgDir = initOrgContextsDir();
+  const changed = join(dir, "changed.json");
+  writeFileSync(changed, "[]");
+  const out = execFileSync("node", [
+    join(process.cwd(), "opencode-review/context/prepare-review-context.mjs"),
+    "--workspace", dir,
+    "--trusted-ref", sha,
+    "--changed-files", changed,
+    "--org-contexts-dir", orgDir,
+    "--max-bytes", "500000",
+  ], { encoding: "utf8" });
+  assert.match(out, /^REVIEW_CONTEXT_STATUS=READY$/m);
+  rmSync(dir, { recursive: true, force: true });
+  rmSync(orgDir, { recursive: true, force: true });
+});

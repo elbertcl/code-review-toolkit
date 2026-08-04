@@ -207,7 +207,7 @@ function parseArgs(args) {
     if (!args[index]?.startsWith("--") || args[index + 1] === undefined) throw new Error(`Invalid argument ${args[index] ?? ""}`);
     options[args[index].slice(2)] = args[index + 1];
   }
-  for (const required of ["workspace", "trusted-ref", "changed-files", "org-contexts", "max-bytes"]) {
+  for (const required of ["workspace", "trusted-ref", "changed-files", "org-contexts-dir", "max-bytes"]) {
     if (!options[required]) throw new Error(`Missing --${required}`);
   }
   const maxBytes = Number(options["max-bytes"]);
@@ -224,7 +224,7 @@ async function main() {
     workspace: options.workspace,
     trustedRef: options["trusted-ref"],
     changedFiles,
-    orgContextsPrefix: options["org-contexts"],
+    orgContextsDir: options["org-contexts-dir"],
     outputPath,
     maxBytes: options.maxBytes,
     openThreadsPath: options["open-threads"],
