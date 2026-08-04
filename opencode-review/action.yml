@@ -70,6 +70,18 @@ inputs:
     description: Abort the review when compiled context status is BLOCKED.
     required: false
     default: "true"
+  ocr:
+    description: Run the OCR engine instead of the OpenCode agent (fail-closed on missing secrets).
+    required: false
+    default: "false"
+  ocr_llm_url:
+    description: OCR LLM endpoint URL (required when ocr is true).
+    required: false
+    default: ""
+  ocr_llm_token:
+    description: OCR LLM auth token (required when ocr is true).
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -370,10 +382,213 @@ runs:
         LINE_COUNT=$(wc -l < review_context.md | tr -d ' ')
         gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Review context compiled** — status \`%s\` · %s source(s) · %s lines' "$STATUS" "$SOURCES" "$LINE_COUNT")"
 
+    # ── OCR engine branch (runs instead of the agent when ocr:true) ──────────
+    - name: Validate OCR secrets
+      id: ocr-secrets
+      if: |
+        inputs.ocr == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ -z "${{ inputs.ocr_llm_url }}" ] || [ -z "${{ inputs.ocr_llm_token }}" ]; then
+          echo "::error::OCR_LMM_URL and OCR_LLM_TOKEN secrets are required when ocr is true."
+          gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "**OCR review aborted:** missing required OCR secrets (LLM endpoint or token)."
+          exit 1
+        fi
+
+    - name: Fetch open PR review threads (OCR)
+      id: ocr-threads
+      if: |
+        inputs.ocr == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const fs = require('fs');
+          const prNumber = Number(process.env.PR_NUMBER);
+          const comments = await github.paginate(github.rest.pulls.listReviewComments, {
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: prNumber,
+            per_page: 100,
+          });
+          const latestByRoot = new Map();
+          for (const c of comments) {
+            const root = c.in_reply_to_id || c.id;
+            const prev = latestByRoot.get(root);
+            if (!prev || new Date(c.created_at) > new Date(prev.created_at)) {
+              latestByRoot.set(root, c);
+            }
+          }
+          const threads = [];
+          const anchors = [];
+          for (const c of latestByRoot.values()) {
+            if (c.user && c.user.login && c.user.login.endsWith('[bot]')) continue;
+            const line = c.line ?? c.original_line;
+            if (c.path == null || line == null) continue;
+            threads.push({
+              path: c.path,
+              line,
+              root_id: c.in_reply_to_id || c.id,
+              latest_author: c.user ? c.user.login : 'unknown',
+              latest_body_excerpt: (c.body || '').slice(0, 300),
+            });
+            anchors.push({ path: c.path, line });
+          }
+          fs.writeFileSync('/tmp/open-threads.json', JSON.stringify(threads));
+          fs.writeFileSync('/tmp/open-thread-anchors.json', JSON.stringify(anchors));
+          core.info(`Collected ${threads.length} open non-bot review threads`);
+
+    - name: Build OCR background
+      if: |
+        inputs.ocr == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      run: node "${{ github.action_path }}/ocr/build-background.mjs" /tmp/open-threads.json > /tmp/background.md
+
+    - name: Compile OCR rules
+      if: |
+        inputs.ocr == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      run: |
+        node --input-type=module -e "
+          import { compileOcrRules } from '\${{ github.action_path }}/ocr/compile-ocr-rules.mjs';
+          import { parseManifest, validateManifest } from '\${{ github.action_path }}/context/lib/review-manifest.mjs';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const manifestText = readFileSync('REVIEW.md', 'utf8');
+          const manifest = validateManifest(parseManifest(manifestText));
+          const policyBody = readFileSync(manifest.policy_path, 'utf8');
+          const rules = compileOcrRules({
+            workspace: process.cwd(),
+            trustedRef: process.env.BASE_SHA,
+            changedFiles: [],
+            orgContextsDir: '\${{ github.action_path }}/context/contexts',
+            manifest,
+            policyBody,
+          });
+          writeFileSync(process.env.RUNNER_TEMP + '/ocr-rule.json', JSON.stringify(rules, null, 2) + '\n');
+        "
+
+    - name: Install and run OCR
+      if: |
+        inputs.ocr == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      env:
+        BASE_SHA: ${{ steps.context.outputs.base_sha }}
+        HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+      run: |
+        npm install -g @alibaba-group/open-code-review@1.8.1
+        ocr config set llm.url "${{ inputs.ocr_llm_url }}"
+        ocr config set llm.auth_token "${{ inputs.ocr_llm_token }}"
+        ocr config set llm.protocol openai
+        ocr config set llm.model deepseek-v4-pro
+        ocr review --from "$BASE_SHA" --to "$HEAD_SHA" \
+          --rule "$RUNNER_TEMP/ocr-rule.json" \
+          --background-file /tmp/background.md \
+          --format json > /tmp/findings.json
+
+    - name: Post OCR findings
+      if: |
+        inputs.ocr == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const fs = require('fs');
+          const prNumber = Number(process.env.PR_NUMBER);
+          const findings = JSON.parse(fs.readFileSync('/tmp/findings.json', 'utf8'));
+          const anchors = JSON.parse(fs.readFileSync('/tmp/open-thread-anchors.json', 'utf8'));
+
+          const { computeFindings } = await import('${{ github.action_path }}/ocr/post-findings.mjs');
+          const result = computeFindings({ findings, anchors });
+
+          if (result.comments.length > 0) {
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              event: 'COMMENT',
+              comments: result.comments,
+            });
+          }
+
+          if (result.message) {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: result.message,
+            });
+          }
+
+          fs.writeFileSync('/tmp/ocr-result.json', JSON.stringify({ kept: result.kept.length, dropped: result.dropped.length }));
+
+    - name: Append OCR measurement
+      if: |
+        inputs.ocr == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      env:
+        HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
+      run: |
+        PR_NUMBER="${{ inputs.issue_number || github.event.issue.number }}"
+        RESULT=$(cat /tmp/ocr-result.json)
+        node --input-type=module -e "
+          import { buildMeasurementRow } from '\${{ github.action_path }}/ocr/append-measurement.mjs';
+          import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+          const findings = JSON.parse(readFileSync('/tmp/findings.json', 'utf8'));
+          const result = JSON.parse(readFileSync('/tmp/ocr-result.json', 'utf8'));
+          const row = buildMeasurementRow({
+            verdict: findings.length > 0 ? 'flagged' : 'clean',
+            findings,
+            suppressed: result.dropped,
+            tokens: { total: 0 },
+            prNumber: Number('$PR_NUMBER'),
+            sha: '${{ env.HEAD_SHA }}',
+          });
+          const path = 'docs/poc/reviewtooling-lane-measurements.json';
+          let rows = [];
+          if (existsSync(path)) {
+            try { rows = JSON.parse(readFileSync(path, 'utf8')); } catch {}
+          }
+          rows.push(row);
+          writeFileSync(path, JSON.stringify(rows, null, 2) + '\n');
+        "
+
     # ── Serena MCP setup (fail-open) ─────────────────────────────────────────
     - name: Set up Serena MCP
       id: serena
       if: |
+        inputs.ocr != 'true' &&
         inputs.serena == 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -412,6 +627,7 @@ runs:
     # ── Prepare workspace-local OpenCode instruction files ───────────────────
     - name: Prepare OpenCode instruction files
       if: |
+        inputs.ocr != 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -497,6 +713,7 @@ runs:
     # ── Guard: review mode must stay comment-only / clean ────────────────────
     - name: Ensure review workspace is clean before OpenCode runs
       if: |
+        inputs.ocr != 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -519,7 +736,7 @@ runs:
     # at startup. For workflow_dispatch, inject it so the review posts to the
     # correct PR. Issue_comment triggers already have the context — skip.
     - name: Inject PR context for opencode
-      if: inputs.issue_number != ''
+      if: inputs.ocr != 'true' && inputs.issue_number != ''
       shell: bash
       run: |
         jq '. + { issue: { number: ($issueNum|tonumber), pull_request: {} } }' \
@@ -531,6 +748,7 @@ runs:
     # ── Full review (first-time) ─────────────────────────────────────────────
     - name: Run full review
       if: |
+        inputs.ocr != 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         (steps.pr-info.outputs.mode == 'review' || steps.preflight.outputs.mode_override == 'review') &&
         steps.loop_guard.outputs.skip != 'true'
@@ -556,6 +774,7 @@ runs:
     # ── Re-review (subsequent /review after prior feedback) ─────────────────
     - name: Run re-review
       if: |
+        inputs.ocr != 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.pr-info.outputs.mode == 're-review' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -585,6 +804,7 @@ runs:
     - name: Verify review comment is posted
       id: review-comment-id
       if: |
+        inputs.ocr != 'true' &&
         steps.pr-info.outputs.skip != 'true' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -627,6 +847,7 @@ runs:
         CONTEXT_VERDICT: ${{ steps.context.outputs.verdict }}
         SERENA_STATUS: ${{ steps.serena.outputs.status }}
         MODE: ${{ steps.pr-info.outputs.mode }}
+        ENGINE: ${{ inputs.ocr == 'true' && 'ocr' || 'agent' }}
       run: |
         mkdir -p "$RUNNER_TEMP/telemetry"
         node -e "
@@ -634,6 +855,7 @@ runs:
           const row = {
             pr: Number(process.env.PR_NUMBER),
             run_id: process.env.RUN_ID,
+            engine: process.env.ENGINE || 'agent',
             mode: process.env.MODE || null,
             base_sha: process.env.BASE_SHA || null,
             head_sha: process.env.HEAD_SHA || null,

@@ -7,7 +7,7 @@ const MANIFEST_KEYS = new Set([
   "schema_version", "profile", "organization_profiles", "policy_path",
   "verification_commands", "required_context", "optional_context",
   "conditional_context", "required_checks", "diff_limits", "diff_override",
-  "docs_only_paths", "excluded_paths",
+  "docs_only_paths", "excluded_paths", "review_directives",
 ]);
 const ROLES = new Set([
   "instructions", "policy", "architecture", "invariants", "testspec",
@@ -95,8 +95,9 @@ export function parseManifest(markdown) {
 export function validateManifest(manifest) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) fail("manifest must be an object");
   for (const key of Object.keys(manifest)) if (!MANIFEST_KEYS.has(key)) fail(`unknown key ${key}`);
-  for (const key of MANIFEST_KEYS) if (!(key in manifest)) fail(`missing key ${key}`);
-  if (manifest.schema_version !== 1) fail("schema_version must be 1");
+  for (const key of MANIFEST_KEYS) if (!(key in manifest) && key !== "review_directives") fail(`missing key ${key}`);
+  if (manifest.schema_version !== 1 && manifest.schema_version !== 2) fail("schema_version must be 1 or 2");
+  if ("review_directives" in manifest && manifest.schema_version !== 2) fail("review_directives requires schema_version 2");
   if (!(manifest.profile in PROFILE_ALLOWLIST)) fail("profile must be backend or frontend");
   if (JSON.stringify(manifest.organization_profiles) !== JSON.stringify(PROFILE_ALLOWLIST[manifest.profile])) {
     fail(`organization_profiles must be ${PROFILE_ALLOWLIST[manifest.profile].join(", ")}`);
@@ -138,6 +139,16 @@ export function validateManifest(manifest) {
   if (typeof manifest.diff_override?.label !== "string" || !manifest.diff_override.label) fail("diff_override.label is required");
   requireNonEmptyStrings(manifest.diff_override?.authorized_associations, "diff_override.authorized_associations");
   if (Object.keys(manifest.diff_override ?? {}).sort().join(",") !== "authorized_associations,label") fail("diff_override has invalid keys");
+  if ("review_directives" in manifest) {
+    if (!Array.isArray(manifest.review_directives)) fail("review_directives must be an array");
+    for (const entry of manifest.review_directives) {
+      const keys = Object.keys(entry ?? {}).sort().join(",");
+      if (keys !== "directive,when_changed") fail("review_directives entries require exactly when_changed and directive");
+      requireNonEmptyStrings(entry.when_changed, "review_directives.when_changed");
+      entry.when_changed.forEach((glob) => validateGlob(glob, "review_directives.when_changed"));
+      if (typeof entry.directive !== "string" || !entry.directive.trim()) fail("review_directives.directive must be a non-empty string");
+    }
+  }
   for (const field of ["docs_only_paths", "excluded_paths"]) {
     requireNonEmptyStrings(manifest[field], field);
     manifest[field].forEach((glob) => validateGlob(glob, field));
@@ -164,6 +175,15 @@ export function selectConditionalContext(manifest, changedFiles) {
   return manifest.conditional_context.flatMap((entry) => (
     changedFiles.some((changedFile) => entry.when_changed.some((glob) => globMatches(glob, changedFile)))
       ? entry.paths.map((contextPath) => ({ path: contextPath, role: entry.role }))
+      : []
+  ));
+}
+
+export function selectDirectives(manifest, changedFiles) {
+  const directives = manifest.review_directives ?? [];
+  return directives.flatMap((entry) => (
+    changedFiles.some((changedFile) => entry.when_changed.some((glob) => globMatches(glob, changedFile)))
+      ? [{ when_changed: entry.when_changed, directive: entry.directive }]
       : []
   ));
 }
