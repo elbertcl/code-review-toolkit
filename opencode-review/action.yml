@@ -417,38 +417,84 @@ runs:
         script: |
           const fs = require('fs');
           const prNumber = Number(process.env.PR_NUMBER);
-          const comments = await github.paginate(github.rest.pulls.listReviewComments, {
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            pull_number: prNumber,
-            per_page: 100,
-          });
-          const latestByRoot = new Map();
-          for (const c of comments) {
-            const root = c.in_reply_to_id || c.id;
-            const prev = latestByRoot.get(root);
-            if (!prev || new Date(c.created_at) > new Date(prev.created_at)) {
-              latestByRoot.set(root, c);
+
+          const threadsQuery = `
+            query($owner: String!, $repo: String!, $prNumber: Int!, $cursor: String) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $prNumber) {
+                  reviewThreads(first: 100, after: $cursor) {
+                    nodes {
+                      isResolved
+                      isOutdated
+                      comments(first: 100) {
+                        totalCount
+                        nodes {
+                          author { login }
+                          body
+                          path
+                          line
+                        }
+                      }
+                    }
+                    pageInfo { hasNextPage, endCursor }
+                  }
+                }
+              }
             }
+          `;
+
+          let allThreads = [];
+          let cursor = null;
+          let hasNextPage = true;
+
+          while (hasNextPage) {
+            const result = await github.graphql(threadsQuery, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              prNumber,
+              cursor,
+            });
+            const threads = result.repository.pullRequest.reviewThreads;
+            allThreads.push(...threads.nodes);
+            hasNextPage = threads.pageInfo.hasNextPage;
+            cursor = threads.pageInfo.endCursor;
           }
+
           const threads = [];
           const anchors = [];
-          for (const c of latestByRoot.values()) {
-            if (c.user && c.user.login && c.user.login.endsWith('[bot]')) continue;
-            const line = c.line ?? c.original_line;
-            if (c.path == null || line == null) continue;
+
+          for (const thread of allThreads) {
+            const comments = thread.comments.nodes;
+            const latestComment = comments[comments.length - 1];
+            if (!latestComment || !latestComment.path || latestComment.line == null) continue;
+
+            const humanBodies = comments
+              .filter(c => c.author && c.author.login && !c.author.login.endsWith('[bot]'))
+              .map(c => c.body || '');
+
             threads.push({
-              path: c.path,
-              line,
-              root_id: c.in_reply_to_id || c.id,
-              latest_author: c.user ? c.user.login : 'unknown',
-              latest_body_excerpt: (c.body || '').slice(0, 300),
+              path: latestComment.path,
+              line: latestComment.line,
+              current_line: latestComment.line,
+              is_resolved: thread.isResolved,
+              is_outdated: thread.isOutdated,
+              latest_author: latestComment.author ? latestComment.author.login : 'unknown',
+              latest_body_excerpt: (latestComment.body || '').slice(0, 300),
+              comment_count: thread.comments.totalCount,
+              human_bodies: humanBodies,
             });
-            anchors.push({ path: c.path, line });
+
+            anchors.push({
+              path: latestComment.path,
+              line: latestComment.line,
+              is_resolved: thread.isResolved,
+              is_outdated: thread.isOutdated,
+            });
           }
+
           fs.writeFileSync('/tmp/open-threads.json', JSON.stringify(threads));
           fs.writeFileSync('/tmp/open-thread-anchors.json', JSON.stringify(anchors));
-          core.info(`Collected ${threads.length} open non-bot review threads`);
+          core.info(`Collected ${threads.length} review threads via GraphQL (${anchors.filter(a => a.is_resolved).length} resolved, ${anchors.filter(a => a.is_outdated).length} outdated)`);
 
     - name: Build OCR background
       if: |
