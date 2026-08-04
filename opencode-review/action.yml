@@ -311,6 +311,7 @@ runs:
 
     # ── Context preparation (both modes) ────────────────────────────────────
     - name: Prepare review context
+      id: context
       if: |
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -320,10 +321,36 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+        REPO: ${{ github.repository }}
       run: |
-        bash "${{ github.action_path }}/../scripts/prepare-review-context.sh" \
-          "${{ inputs.issue_number || github.event.issue.number }}" \
-          "${{ github.repository }}"
+        BASE_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.base.sha')
+        HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha')
+        for scratch in "review_context.md" ".opencode/"; do
+          grep -Fxq "$scratch" .git/info/exclude 2>/dev/null || echo "$scratch" >> .git/info/exclude
+        done
+        gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' \
+          | node -e "process.stdout.write(JSON.stringify(require('fs').readFileSync(0,'utf8').split('\n').filter(Boolean)))" \
+          > "${RUNNER_TEMP}/changed-files.json"
+        set +e
+        node "${{ github.action_path }}/context/prepare-review-context.mjs" \
+          --workspace "$PWD" \
+          --trusted-ref "$BASE_SHA" \
+          --changed-files "${RUNNER_TEMP}/changed-files.json" \
+          --org-contexts-dir "${{ github.action_path }}/context/contexts" \
+          --max-bytes 500000 | tee "${RUNNER_TEMP}/context-output.txt"
+        STATUS_LINE=$(grep -o 'REVIEW_CONTEXT_STATUS=[A-Z_]*' "${RUNNER_TEMP}/context-output.txt" | head -1 | cut -d= -f2)
+        set -e
+        echo "verdict=${STATUS_LINE:-BLOCKED}" >> "$GITHUB_OUTPUT"
+        echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
+        echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+        cp "$PWD/.opencode/tmp/review_context.md" "$PWD/review_context.md" 2>/dev/null || true
+        if [ "${{ inputs.fail_closed_context }}" = "true" ] && [ "${STATUS_LINE}" = "BLOCKED" ]; then
+          echo "::error::Compiled review context is BLOCKED — required context is missing or incomplete."
+          gh pr comment "$PR_NUMBER" --repo "$REPO" \
+            --body "**OpenCode review aborted:** required review context is missing or incomplete (status BLOCKED). Run the \`initialize-review-context\` skill and fill required gap stubs."
+          exit 1
+        fi
 
     # ── Context summary comment ────────────────────────────────────────────
     - name: Post context summary
