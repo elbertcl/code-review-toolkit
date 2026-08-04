@@ -70,6 +70,18 @@ inputs:
     description: Abort the review when compiled context status is BLOCKED.
     required: false
     default: "true"
+  ocr:
+    description: Run the OCR engine instead of the OpenCode agent (fail-closed on missing secrets).
+    required: false
+    default: "false"
+  ocr_llm_url:
+    description: OCR LLM endpoint URL (required when ocr is true).
+    required: false
+    default: ""
+  ocr_llm_token:
+    description: OCR LLM auth token (required when ocr is true).
+    required: false
+    default: ""
 
 runs:
   using: composite
