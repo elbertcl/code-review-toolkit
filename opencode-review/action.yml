@@ -370,6 +370,45 @@ runs:
         LINE_COUNT=$(wc -l < review_context.md | tr -d ' ')
         gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Review context compiled** — status \`%s\` · %s source(s) · %s lines' "$STATUS" "$SOURCES" "$LINE_COUNT")"
 
+    # ── Serena MCP setup (fail-open) ─────────────────────────────────────────
+    - name: Set up Serena MCP
+      id: serena
+      if: |
+        inputs.serena == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      run: |
+        SERENA_HOME="$RUNNER_TEMP/serena"
+        STATUS_JSON="$RUNNER_TEMP/serena-status.json"
+        bash "${{ github.action_path }}/serena/install-and-probe.sh" \
+          "${{ inputs.serena_sha }}" "$SERENA_HOME" "$STATUS_JSON" || true
+        STATUS=$(node -pe "try { JSON.parse(require('fs').readFileSync('$STATUS_JSON','utf8')).status } catch { 'unavailable' }")
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        echo "status_json=$STATUS_JSON" >> "$GITHUB_OUTPUT"
+        if [ "$STATUS" = "available" ]; then
+          echo "SERENA_HOME=$SERENA_HOME" >> "$GITHUB_ENV"
+          mkdir -p .opencode
+          if [ -f .opencode/opencode.json ]; then
+            BASE=.opencode/opencode.json
+          else
+            BASE=/dev/stdin
+          fi
+          jq -n --arg home "$SERENA_HOME" '{
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": { "serena": { "type": "local", "command": [($home + "/bin/serena-readonly"), "."], "enabled": true, "timeout": 30000 } },
+            "tools": { "serena*": true }
+          }' > "$RUNNER_TEMP/serena-config.json"
+          if [ -f .opencode/opencode.json ]; then
+            jq -s '.[0] * .[1]' .opencode/opencode.json "$RUNNER_TEMP/serena-config.json" > "$RUNNER_TEMP/merged.json"
+            cp "$RUNNER_TEMP/merged.json" .opencode/opencode.json
+          else
+            cp "$RUNNER_TEMP/serena-config.json" .opencode/opencode.json
+          fi
+        fi
+
     # ── Prepare workspace-local OpenCode instruction files ───────────────────
     - name: Prepare OpenCode instruction files
       if: |
