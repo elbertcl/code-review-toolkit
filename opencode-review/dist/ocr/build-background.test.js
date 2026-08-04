@@ -87,5 +87,35 @@ describe("buildBackground", () => {
         const result = buildBackground(threads);
         assert.match(result, /\u2026\[truncated\]/);
     });
+    it("merges serena context with resolved digest under 2000 bytes", () => {
+        const serenaContext = "- ProcessSpendingSellerEvents referenced by: subscriber.go:92";
+        const threads = [
+            {
+                path: "internal/foo.go", line: 10, is_resolved: true, is_outdated: false,
+                comment_count: 1, human_bodies: ["This was discussed and resolved."],
+            },
+        ];
+        const result = buildBackground(threads, serenaContext);
+        assert.ok(result.startsWith(serenaContext), "serena context should come first");
+        assert.match(result, /ProcessSpendingSellerEvents/);
+        assert.match(result, /This was discussed and resolved/);
+        assert.ok(Buffer.byteLength(result) <= 2100, "total should be near or under 2000");
+    });
+    it("returns only serena context when no threads", () => {
+        const serenaContext = "- MyFunc referenced by: a.go:1";
+        const result = buildBackground([], serenaContext);
+        assert.equal(result, serenaContext);
+    });
+    it("prioritizes serena context over digest when budget is tight", () => {
+        const serenaContext = "x".repeat(1900);
+        const threads = [
+            {
+                path: "internal/foo.go", line: 1, is_resolved: true, is_outdated: false,
+                comment_count: 1, human_bodies: ["some discussion"],
+            },
+        ];
+        const result = buildBackground(threads, serenaContext);
+        assert.ok(result.includes("x".repeat(100)), "serena context should be preserved");
+    });
 });
 //# sourceMappingURL=build-background.test.js.map

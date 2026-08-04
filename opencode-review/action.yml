@@ -531,7 +531,7 @@ runs:
         steps.loop_guard.outputs.skip != 'true' &&
         steps.security.outputs.skip != 'true'
       shell: bash
-      run: node "${{ github.action_path }}/dist/ocr/build-background.js" /tmp/open-threads.json > /tmp/background.md
+      run: node "${{ github.action_path }}/dist/ocr/build-background.js" /tmp/open-threads.json /tmp/serena-context.md > /tmp/background.md
 
     - name: Compile OCR rules
       if: |
