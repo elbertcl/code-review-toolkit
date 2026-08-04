@@ -182,5 +182,39 @@ describe("compileOcrRules", () => {
         assert.ok(result.include.includes("cmd/**/*.go"));
         assert.ok(result.include.includes("pkg/**/*.go"));
     });
+    it("prepends resolved directives before base catch-all rule", () => {
+        const resolvedDirectives = [
+            { path: "internal/a.go", rule: "Do NOT re-flag resolved finding at this anchor." },
+            { path: "internal/b.go", rule: "Do NOT re-flag resolved finding at this anchor." },
+        ];
+        const result = compileOcrRules({
+            workspace: ".",
+            trustedRef: "0000000000000000000000000000000000000000",
+            changedFiles: [],
+            orgContextsDir: orgDir,
+            manifest: MANIFEST,
+            policyBody: POLICY_BODY,
+            resolvedDirectives,
+        });
+        const baseIdx = result.rules.findIndex((r) => r.path === "internal/**/*.go");
+        const resolvedAIdx = result.rules.findIndex((r) => r.path === "internal/a.go");
+        const resolvedBIdx = result.rules.findIndex((r) => r.path === "internal/b.go");
+        assert.ok(baseIdx >= 0, "base rule should exist");
+        assert.ok(resolvedAIdx >= 0, "resolved directive for a.go should exist");
+        assert.ok(resolvedBIdx >= 0, "resolved directive for b.go should exist");
+        assert.ok(resolvedAIdx < baseIdx, "resolved directive should precede base catch-all");
+        assert.ok(resolvedBIdx < baseIdx, "resolved directive should precede base catch-all");
+    });
+    it("resolvedDirectives is optional and does not affect output when absent", () => {
+        const result = compileOcrRules({
+            workspace: ".",
+            trustedRef: "0000000000000000000000000000000000000000",
+            changedFiles: [],
+            orgContextsDir: orgDir,
+            manifest: MANIFEST,
+            policyBody: POLICY_BODY,
+        });
+        assert.ok(result.rules.length >= 1, "should have at least the base rule");
+    });
 });
 //# sourceMappingURL=compile-ocr-rules.test.js.map

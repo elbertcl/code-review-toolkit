@@ -78,6 +78,7 @@ interface CompileOcrRulesInput {
   orgContextsDir: string;
   manifest: Manifest;
   policyBody?: string;
+  resolvedDirectives?: OcrRule[];
 }
 
 interface CompileOcrRulesResult {
@@ -96,7 +97,7 @@ function buildBaseRule(options: BaseRuleOptions): OcrRule {
   return { path: "internal/**/*.go", rule: text };
 }
 
-export function compileOcrRules({ orgContextsDir, manifest, policyBody }: CompileOcrRulesInput): CompileOcrRulesResult {
+export function compileOcrRules({ orgContextsDir, manifest, policyBody, resolvedDirectives }: CompileOcrRulesInput): CompileOcrRulesResult {
   const orgBodies: Record<string, string> = {};
   const mandatoryRuleIds: string[] = [];
   for (const profile of manifest.organization_profiles) {
@@ -143,6 +144,10 @@ export function compileOcrRules({ orgContextsDir, manifest, policyBody }: Compil
   }
 
   rules.push(buildBaseRule({ orgRulesBlk, conventionsPaths: allRequiredPaths, requiredContextPaths: [], policyDimensions }));
+
+  if (resolvedDirectives && resolvedDirectives.length > 0) {
+    rules.splice(rules.length - 1, 0, ...resolvedDirectives);
+  }
 
   const include = manifest.profile === "backend"
     ? ["internal/**/*.go", "cmd/**/*.go", "pkg/**/*.go"]
