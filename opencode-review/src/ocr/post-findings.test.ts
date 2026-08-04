@@ -10,15 +10,16 @@ describe("computeFindings", () => {
   ];
 
   it("keeps findings not matched by anchors", () => {
-    const anchors = [{ path: "internal/a.go", line: 10 }];
+    const anchors = [{ path: "internal/a.go", line: 10, is_resolved: false }];
     const result = computeFindings({ findings: sampleFindings, anchors });
     assert.equal(result.kept.length, 2);
     assert.equal(result.dropped.length, 1);
+    assert.equal(result.resolved.length, 0);
     assert.equal(result.dropped[0].path, "internal/a.go");
   });
 
   it("matches by end_line when start_line is absent", () => {
-    const anchors = [{ path: "internal/b.go", line: 25 }];
+    const anchors = [{ path: "internal/b.go", line: 25, is_resolved: false }];
     const result = computeFindings({ findings: sampleFindings, anchors });
     assert.equal(result.dropped.length, 1);
     assert.equal(result.dropped[0].message, "magic number");
@@ -36,9 +37,9 @@ describe("computeFindings", () => {
 
   it("returns summary message when kept is empty", () => {
     const anchors = [
-      { path: "internal/a.go", line: 10 },
-      { path: "internal/b.go", line: 20 },
-      { path: "internal/b.go", line: 25 },
+      { path: "internal/a.go", line: 10, is_resolved: false },
+      { path: "internal/b.go", line: 20, is_resolved: false },
+      { path: "internal/b.go", line: 25, is_resolved: false },
     ];
     const result = computeFindings({ findings: sampleFindings, anchors });
     assert.equal(result.kept.length, 0);
@@ -50,5 +51,32 @@ describe("computeFindings", () => {
     const result = computeFindings({ findings: [], anchors: [] });
     assert.deepStrictEqual(result.comments, []);
     assert.equal(result.kept.length, 0);
+  });
+
+  it("sorts findings into resolved bucket for resolved anchors", () => {
+    const anchors = [
+      { path: "internal/a.go", line: 10, is_resolved: true },
+      { path: "internal/b.go", line: 20, is_resolved: false },
+    ];
+    const result = computeFindings({ findings: sampleFindings, anchors });
+    assert.equal(result.resolved.length, 1);
+    assert.equal(result.resolved[0].path, "internal/a.go");
+    assert.equal(result.dropped.length, 1);
+    assert.equal(result.dropped[0].path, "internal/b.go");
+    assert.equal(result.kept.length, 1);
+  });
+
+  it("summary message counts both dropped and resolved when kept is empty", () => {
+    const anchors = [
+      { path: "internal/a.go", line: 10, is_resolved: true },
+      { path: "internal/b.go", line: 20, is_resolved: false },
+      { path: "internal/b.go", line: 25, is_resolved: true },
+    ];
+    const result = computeFindings({ findings: sampleFindings, anchors });
+    assert.equal(result.kept.length, 0);
+    assert.ok(result.message);
+    assert.match(result.message!, /3 previously flagged/);
+    assert.match(result.message!, /1 still open/);
+    assert.match(result.message!, /2 resolved/);
   });
 });

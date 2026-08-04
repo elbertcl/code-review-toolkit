@@ -11,10 +11,19 @@ export function computeFindings({ findings, anchors }) {
         return false;
     };
     const dropped = [];
+    const resolved = [];
     const kept = [];
     for (const finding of f) {
-        const matched = a.some((anchor) => isMatch(finding, anchor));
-        (matched ? dropped : kept).push(finding);
+        const matchedAnchor = a.find((anchor) => isMatch(finding, anchor));
+        if (!matchedAnchor) {
+            kept.push(finding);
+        }
+        else if (matchedAnchor.is_resolved) {
+            resolved.push(finding);
+        }
+        else {
+            dropped.push(finding);
+        }
     }
     const comments = kept.map((finding) => {
         const sevCat = `${finding.severity ?? "Info"}/${finding.category ?? "General"}`;
@@ -26,9 +35,12 @@ export function computeFindings({ findings, anchors }) {
         };
     });
     let message = null;
-    if (kept.length === 0 && dropped.length > 0) {
-        message = `No new findings. ${dropped.length} previously flagged issue${dropped.length !== 1 ? "s" : ""} still open on this PR (suppressed as duplicate).`;
+    if (kept.length === 0) {
+        const total = dropped.length + resolved.length;
+        if (total > 0) {
+            message = `No new findings. ${total} previously flagged issue${total !== 1 ? "s" : ""} (${dropped.length} still open, ${resolved.length} resolved) suppressed as duplicate.`;
+        }
     }
-    return { kept, dropped, comments, message };
+    return { kept, dropped, resolved, comments, message };
 }
 //# sourceMappingURL=post-findings.js.map
