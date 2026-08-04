@@ -117,6 +117,52 @@ findings-processing, or OCR-install logic:
 | `/review-serena` (POC) | `/review-serena` comment | `serena: true` |
 | `/review-ocr` (POC) | `/review-ocr` comment | `ocr: true` |
 
+## Development (TypeScript, v4.2+)
+
+The review engine is authored in TypeScript (`opencode-review/src/`) and compiled
+to JavaScript (`opencode-review/dist/`) before shipping. `dist/` is committed so
+the action runs precompiled JS at runtime — no transpile step, no added latency.
+
+### Contributor workflow
+
+```
+# Edit sources
+vim opencode-review/src/ocr/compile-ocr-rules.ts
+
+# Typecheck (fast, no emit)
+npm run typecheck
+
+# Commit both source and compiled dist together
+npm run build
+git add opencode-review/src/ opencode-review/dist/
+git commit -m "..."
+```
+
+### Why `dist/` is committed
+
+This follows the **canonical GitHub Action pattern** (used by `actions/checkout`,
+`actions/setup-node`, and most official actions): author in a higher-level
+language, precompile, commit the artifact. The action runs the committed JS —
+no `tsx`, no `ts-node`, no runtime dependency on TypeScript. Runtime behavior
+and latency are identical to the previous `.mjs` source.
+
+### `check-dist` CI guard
+
+`npm run check-dist` rebuilds `dist/` from source and fails if the committed
+`dist/` differs. This prevents shipping stale JS when a source change is
+committed without a matching `npm run build`. The guard runs in CI on every PR
+and push to `main` (`.github/workflows/toolkit-ci.yml`).
+
+### CI pipeline
+
+```
+npm ci → npm run typecheck → npm test → npm run build → check-dist
+```
+
+Tests run against **compiled `dist/`** (`node --test dist/**/*.test.js`), which
+is the truest representation of what ships in the action. `tsx` is allowed for
+local dev but never in CI or at action runtime.
+
 ## OpenCode Review
 
 Use `opencode-review` when you want OpenCode to review PRs from a `/review` comment. The consuming repo only needs the trigger workflow; review behavior, context preparation, inline comments, and the summary contract live in this toolkit.

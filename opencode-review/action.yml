@@ -345,7 +345,7 @@ runs:
           | node -e "process.stdout.write(JSON.stringify(require('fs').readFileSync(0,'utf8').split('\n').filter(Boolean)))" \
           > "${RUNNER_TEMP}/changed-files.json"
         set +e
-        node "${{ github.action_path }}/context/prepare-review-context.mjs" \
+        node "${{ github.action_path }}/dist/context/prepare-review-context.js" \
           --workspace "$PWD" \
           --trusted-ref "$BASE_SHA" \
           --changed-files "${RUNNER_TEMP}/changed-files.json" \
@@ -458,7 +458,7 @@ runs:
         steps.loop_guard.outputs.skip != 'true' &&
         steps.security.outputs.skip != 'true'
       shell: bash
-      run: node "${{ github.action_path }}/ocr/build-background.mjs" /tmp/open-threads.json > /tmp/background.md
+      run: node "${{ github.action_path }}/dist/ocr/build-background.js" /tmp/open-threads.json > /tmp/background.md
 
     - name: Compile OCR rules
       if: |
@@ -470,8 +470,8 @@ runs:
       shell: bash
       run: |
         node --input-type=module -e "
-          import { compileOcrRules } from '\${{ github.action_path }}/ocr/compile-ocr-rules.mjs';
-          import { parseManifest, validateManifest } from '\${{ github.action_path }}/context/lib/review-manifest.mjs';
+          import { compileOcrRules } from '\${{ github.action_path }}/dist/ocr/compile-ocr-rules.js';
+          import { parseManifest, validateManifest } from '\${{ github.action_path }}/dist/context/lib/review-manifest.js';
           import { readFileSync, writeFileSync } from 'node:fs';
           const manifestText = readFileSync('REVIEW.md', 'utf8');
           const manifest = validateManifest(parseManifest(manifestText));
@@ -525,7 +525,7 @@ runs:
           const findings = JSON.parse(fs.readFileSync('/tmp/findings.json', 'utf8'));
           const anchors = JSON.parse(fs.readFileSync('/tmp/open-thread-anchors.json', 'utf8'));
 
-          const { computeFindings } = await import('${{ github.action_path }}/ocr/post-findings.mjs');
+          const { computeFindings } = await import('${{ github.action_path }}/dist/ocr/post-findings.js');
           const result = computeFindings({ findings, anchors });
 
           if (result.comments.length > 0) {
@@ -563,7 +563,7 @@ runs:
         PR_NUMBER="${{ inputs.issue_number || github.event.issue.number }}"
         RESULT=$(cat /tmp/ocr-result.json)
         node --input-type=module -e "
-          import { buildMeasurementRow } from '\${{ github.action_path }}/ocr/append-measurement.mjs';
+          import { buildMeasurementRow } from '\${{ github.action_path }}/dist/ocr/append-measurement.js';
           import { readFileSync, writeFileSync, existsSync } from 'node:fs';
           const findings = JSON.parse(readFileSync('/tmp/findings.json', 'utf8'));
           const result = JSON.parse(readFileSync('/tmp/ocr-result.json', 'utf8'));

@@ -1,14 +1,14 @@
 import { lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { ORGANIZATION_PROFILE_ALLOWLIST } from "../context/lib/review-manifest.mjs";
+import { ORGANIZATION_PROFILE_ALLOWLIST, type Manifest } from "../context/lib/review-manifest.js";
 
-function assertSafeGitPath(declaredPath) {
+function assertSafeGitPath(declaredPath: string): void {
   if (path.isAbsolute(declaredPath) || declaredPath.split(/[\\/]/).includes("..") || declaredPath.includes(":")) {
     throw new Error(`${declaredPath} must be an exact path inside the repository`);
   }
 }
 
-function readOrgBody(orgContextsDir, relativePath) {
+function readOrgBody(orgContextsDir: string, relativePath: string): string {
   assertSafeGitPath(relativePath);
   const absolute = path.resolve(orgContextsDir, relativePath);
   const rootReal = path.resolve(orgContextsDir);
@@ -21,7 +21,7 @@ function readOrgBody(orgContextsDir, relativePath) {
   return readFileSync(absolute, "utf8");
 }
 
-function parseMandatoryRuleIds(content, sourcePath) {
+function parseMandatoryRuleIds(content: string, sourcePath: string): string[] {
   const match = content.match(/^mandatory_rule_ids:\s*\[([^\]]*)\]\s*$/m);
   if (!match) throw new Error(`${sourcePath} must declare mandatory_rule_ids`);
   const ids = match[1].split(",").map((value) => value.trim()).filter(Boolean);
@@ -29,14 +29,14 @@ function parseMandatoryRuleIds(content, sourcePath) {
   return ids;
 }
 
-function extractDimensionSummaries(policyBody) {
+function extractDimensionSummaries(policyBody: string): string {
   const blockMatch = policyBody.match(/## Section \d+: [^\n]*\n\n((?:- [^\n]*\n)*)/g);
   if (!blockMatch || blockMatch.length === 0) return "";
-  const summaries = [];
+  const summaries: string[] = [];
   for (const block of blockMatch) {
     const headerMatch = block.match(/## Section \d+: ([^\n]*)/);
     const header = headerMatch ? headerMatch[1] : "Review Dimension";
-    const items = [];
+    const items: string[] = [];
     const itemMatches = block.matchAll(/^-\s+\*\*([^*]+)\*\*(.*)/gm);
     for (const item of itemMatches) {
       items.push(`  - ${item[1].trim()}: ${item[2].trim().slice(0, 80)}`);
@@ -47,8 +47,8 @@ function extractDimensionSummaries(policyBody) {
   return summaries.join("\n");
 }
 
-function buildOrgRulesBlk(orgBodies) {
-  const lines = [];
+function buildOrgRulesBlk(orgBodies: Record<string, string>): string {
+  const lines: string[] = [];
   const ruleRegex = /-\s*\*\*(ORG-[A-Z]+-\d{3}):\*\*\s*(.*)/g;
   for (const [sourcePath, body] of Object.entries(orgBodies)) {
     const matches = body.matchAll(ruleRegex);
@@ -59,7 +59,34 @@ function buildOrgRulesBlk(orgBodies) {
   return lines.join("\n");
 }
 
-function buildBaseRule(options) {
+interface BaseRuleOptions {
+  orgRulesBlk: string;
+  conventionsPaths: string[];
+  requiredContextPaths: string[];
+  policyDimensions: string;
+}
+
+interface OcrRule {
+  path: string;
+  rule: string;
+}
+
+interface CompileOcrRulesInput {
+  workspace: string;
+  trustedRef: string;
+  changedFiles: string[];
+  orgContextsDir: string;
+  manifest: Manifest;
+  policyBody?: string;
+}
+
+interface CompileOcrRulesResult {
+  include: string[];
+  exclude: string[];
+  rules: OcrRule[];
+}
+
+function buildBaseRule(options: BaseRuleOptions): OcrRule {
   const { orgRulesBlk, conventionsPaths, requiredContextPaths, policyDimensions } = options;
   const conventionsRef = conventionsPaths.join(", ");
   const contextRef = requiredContextPaths.join(", ");
@@ -69,9 +96,9 @@ function buildBaseRule(options) {
   return { path: "internal/**/*.go", rule: text };
 }
 
-export function compileOcrRules({ workspace: _workspace, trustedRef: _trustedRef, changedFiles: _changedFiles, orgContextsDir, manifest, policyBody }) {
-  const orgBodies = {};
-  const mandatoryRuleIds = [];
+export function compileOcrRules({ orgContextsDir, manifest, policyBody }: CompileOcrRulesInput): CompileOcrRulesResult {
+  const orgBodies: Record<string, string> = {};
+  const mandatoryRuleIds: string[] = [];
   for (const profile of manifest.organization_profiles) {
     const relativePath = ORGANIZATION_PROFILE_ALLOWLIST[profile];
     if (!relativePath) throw new Error(`Organization profile ${profile} is not allowlisted`);
@@ -83,8 +110,8 @@ export function compileOcrRules({ workspace: _workspace, trustedRef: _trustedRef
   const orgRulesBlk = buildOrgRulesBlk(orgBodies);
   const policyDimensions = policyBody ? extractDimensionSummaries(policyBody) : "";
 
-  const conventionsPaths = [];
-  const requiredContextPaths = [];
+  const conventionsPaths: string[] = [];
+  const requiredContextPaths: string[] = [];
   for (const entry of manifest.required_context) {
     if (entry.role === "instructions" || entry.role === "conventions") {
       (entry.role === "conventions" ? conventionsPaths : requiredContextPaths).push(entry.path);
@@ -94,7 +121,7 @@ export function compileOcrRules({ workspace: _workspace, trustedRef: _trustedRef
   }
   const allRequiredPaths = [...conventionsPaths, ...requiredContextPaths];
 
-  const rules = [];
+  const rules: OcrRule[] = [];
 
   for (const entry of (manifest.conditional_context ?? [])) {
     const docsRef = entry.paths.join(", ");

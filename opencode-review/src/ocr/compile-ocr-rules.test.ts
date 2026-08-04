@@ -4,9 +4,9 @@ import { writeFileSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { compileOcrRules } from "./compile-ocr-rules.mjs";
+import { compileOcrRules } from "./compile-ocr-rules.js";
 
-function createOrgContextsDir() {
+function createOrgContextsDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "ocr-org-"));
   mkdirSync(join(dir, "backend"), { recursive: true });
   writeFileSync(
@@ -59,7 +59,7 @@ const MANIFEST = {
 };
 
 describe("compileOcrRules", () => {
-  let orgDir;
+  let orgDir: string;
 
   before(() => {
     orgDir = createOrgContextsDir();

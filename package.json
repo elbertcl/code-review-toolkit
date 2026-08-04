@@ -1,0 +1,13 @@
+{
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "test": "tsc && find opencode-review/dist -name '*.test.js' -exec node --test {} +",
+    "check-dist": "tsc && git diff --exit-code -- opencode-review/dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.14.0"
+  }
+}

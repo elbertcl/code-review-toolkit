@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildBackground } from "./build-background.mjs";
+import { buildBackground } from "./build-background.js";
 
 describe("buildBackground", () => {
   it("returns placeholder for empty threads", () => {

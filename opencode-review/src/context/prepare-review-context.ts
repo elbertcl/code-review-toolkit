@@ -11,27 +11,29 @@ import {
   parseManifest,
   selectConditionalContext,
   validateManifest,
-} from "./lib/review-manifest.mjs";
+  type Manifest,
+  type ContextEntry,
+} from "./lib/review-manifest.js";
 
 const MANIFEST_PATH = "REVIEW.md";
 
-function git(workspace, args, encoding = "utf8") {
+function git(workspace: string, args: string[], encoding: BufferEncoding = "utf8"): string {
   return execFileSync("git", ["-C", workspace, ...args], { encoding, maxBuffer: 10 * 1024 * 1024 });
 }
 
-function assertSafeGitPath(declaredPath) {
+function assertSafeGitPath(declaredPath: string): void {
   if (path.isAbsolute(declaredPath) || declaredPath.split(/[\\/]/).includes("..") || declaredPath.includes(":")) {
     throw new Error(`${declaredPath} must be an exact path inside the repository`);
   }
 }
 
-export function readAtRef(workspace, trustedRef, declaredPath) {
+export function readAtRef(workspace: string, trustedRef: string, declaredPath: string): string {
   assertSafeGitPath(declaredPath);
-  let mode;
+  let mode: string;
   try {
     mode = git(workspace, ["ls-tree", trustedRef, "--", declaredPath]).trim().split(/\s+/)[0];
   } catch (error) {
-    throw new Error(`${declaredPath} cannot be inspected at trusted ref: ${error.message}`);
+    throw new Error(`${declaredPath} cannot be inspected at trusted ref: ${(error as Error).message}`);
   }
   if (!mode) throw new Error(`${declaredPath} is missing at trusted ref`);
   if (mode === "120000") throw new Error(`${declaredPath} is a symlink at trusted ref`);
@@ -39,11 +41,11 @@ export function readAtRef(workspace, trustedRef, declaredPath) {
   try {
     return git(workspace, ["show", `${trustedRef}:${declaredPath}`]);
   } catch (error) {
-    throw new Error(`${declaredPath} cannot be read at trusted ref: ${error.message}`);
+    throw new Error(`${declaredPath} cannot be read at trusted ref: ${(error as Error).message}`);
   }
 }
 
-export function readOrgContext(orgContextsDir, relativePath) {
+export function readOrgContext(orgContextsDir: string, relativePath: string): string {
   assertSafeGitPath(relativePath);
   const absolute = path.resolve(orgContextsDir, relativePath);
   const rootReal = path.resolve(orgContextsDir);
@@ -56,7 +58,7 @@ export function readOrgContext(orgContextsDir, relativePath) {
   return readFileSync(absolute, "utf8");
 }
 
-function parseMandatoryRuleIds(content, sourcePath) {
+function parseMandatoryRuleIds(content: string, sourcePath: string): string[] {
   const match = content.match(/^mandatory_rule_ids:\s*\[([^\]]*)\]\s*$/m);
   if (!match) throw new Error(`${sourcePath} must declare mandatory_rule_ids`);
   const ids = match[1].split(",").map((value) => value.trim()).filter(Boolean);
@@ -64,13 +66,20 @@ function parseMandatoryRuleIds(content, sourcePath) {
   return ids;
 }
 
-function assertPolicyDoesNotContainMandatoryRules(policy, ruleIds) {
+function assertPolicyDoesNotContainMandatoryRules(policy: string, ruleIds: string[]): void {
   for (const ruleId of ruleIds) {
     if (policy.includes(ruleId)) throw new Error(`Repository policy must not contain mandatory organization rule ID ${ruleId}`);
   }
 }
 
-function sourceSection(sourcePath, content) {
+interface SourceSection {
+  path: string;
+  sha256: string;
+  bytes: number;
+  rendered: string;
+}
+
+function sourceSection(sourcePath: string, content: string): SourceSection {
   const hash = createHash("sha256").update(content).digest("hex");
   return {
     path: sourcePath,
@@ -80,7 +89,14 @@ function sourceSection(sourcePath, content) {
   };
 }
 
-export function buildOpenThreadsSection(openThreads) {
+interface OpenThread {
+  path?: string;
+  line?: number;
+  latest_author?: string;
+  latest_body_excerpt?: string;
+}
+
+export function buildOpenThreadsSection(openThreads: OpenThread[] | null | undefined): SourceSection | null {
   if (!Array.isArray(openThreads) || openThreads.length === 0) return null;
   const directive =
     "The following reviewer threads are already open on this PR. Do NOT re-flag " +
@@ -102,7 +118,7 @@ export function buildOpenThreadsSection(openThreads) {
   };
 }
 
-function assertTrustedCommit(workspace, trustedRef) {
+function assertTrustedCommit(workspace: string, trustedRef: string): void {
   if (!/^[0-9a-f]{40}$/.test(trustedRef)) throw new Error("trustedRef must be a full 40-character commit SHA");
   try {
     git(workspace, ["cat-file", "-e", `${trustedRef}^{commit}`]);
@@ -111,25 +127,52 @@ function assertTrustedCommit(workspace, trustedRef) {
   }
 }
 
-export async function compileReviewContext({ workspace, trustedRef, changedFiles = [], orgContextsDir, outputPath, maxBytes = 500_000, openThreadsPath }) {
+interface CompileReviewContextInput {
+  workspace: string;
+  trustedRef: string;
+  changedFiles?: string[];
+  orgContextsDir: string;
+  outputPath: string;
+  maxBytes?: number;
+  openThreadsPath?: string;
+}
+
+interface SourceMetadata {
+  path: string;
+  sha256: string;
+  bytes: number;
+}
+
+interface CompileReviewContextResult {
+  status: string;
+  trusted_ref: string;
+  profile: string;
+  manifest: Manifest;
+  sources: SourceMetadata[];
+  missing_optional_paths: string[];
+  blockers: string[];
+  total_bytes: number;
+  missingOptional: string[];
+}
+
+export async function compileReviewContext({
+  workspace, trustedRef, changedFiles = [], orgContextsDir, outputPath, maxBytes = 500_000, openThreadsPath,
+}: CompileReviewContextInput): Promise<CompileReviewContextResult> {
   assertTrustedCommit(workspace, trustedRef);
   const manifestText = readAtRef(workspace, trustedRef, MANIFEST_PATH);
   const manifest = validateManifest(parseManifest(manifestText));
-  const sources = [];
+  const sources: SourceSection[] = [];
   let sourceBytes = 0;
-  const addSource = (sourcePath, content) => {
+  const addSource = (sourcePath: string, content: string): void => {
     const source = sourceSection(sourcePath, content);
     sourceBytes += Buffer.byteLength(source.rendered);
     if (sourceBytes > maxBytes) throw new Error(`Compiled review context exceeds ${maxBytes} bytes while adding ${sourcePath}`);
     sources.push(source);
   };
-  const mandatoryRuleIds = [];
+  const mandatoryRuleIds: string[] = [];
   for (const profile of manifest.organization_profiles) {
     const relativePath = ORGANIZATION_PROFILE_ALLOWLIST[profile];
     if (!relativePath) throw new Error(`Organization profile ${profile} is not allowlisted`);
-    // Org contexts ship inside the action checkout, not the consuming repo.
-    // Read them from the action filesystem so a PR branch cannot supply or
-    // redefine its own mandatory organization rules. See RULE-RVW-01.
     const content = readOrgContext(orgContextsDir, relativePath);
     mandatoryRuleIds.push(...parseMandatoryRuleIds(content, relativePath));
     addSource(relativePath, content);
@@ -139,8 +182,8 @@ export async function compileReviewContext({ workspace, trustedRef, changedFiles
   const policy = readAtRef(workspace, trustedRef, manifest.policy_path);
   assertPolicyDoesNotContainMandatoryRules(policy, mandatoryRuleIds);
   const requiredEntries = [...manifest.required_context, ...selectConditionalContext(manifest, changedFiles)];
-  const missingOptional = [];
-  const blockers = [];
+  const missingOptional: string[] = [];
+  const blockers: string[] = [];
   if (manifestText.includes(GAP_MARKER)) blockers.push(`${MANIFEST_PATH} is incomplete`);
   if (policy.includes(GAP_MARKER)) blockers.push(`${manifest.policy_path} is incomplete`);
   else addSource(manifest.policy_path, policy);
@@ -150,7 +193,7 @@ export async function compileReviewContext({ workspace, trustedRef, changedFiles
       if (content.includes(GAP_MARKER)) blockers.push(`${entry.path} is incomplete`);
       else addSource(entry.path, content);
     } catch (error) {
-      blockers.push(`${entry.path} is missing or unsafe: ${error.message}`);
+      blockers.push(`${entry.path} is missing or unsafe: ${(error as Error).message}`);
     }
   }
   for (const entry of manifest.optional_context) {
@@ -163,9 +206,9 @@ export async function compileReviewContext({ workspace, trustedRef, changedFiles
     }
   }
   if (openThreadsPath) {
-    let openThreads = [];
+    let openThreads: OpenThread[] = [];
     try {
-      openThreads = JSON.parse(await readFile(openThreadsPath, "utf8"));
+      openThreads = JSON.parse(await readFile(openThreadsPath, "utf8")) as OpenThread[];
     } catch {
       openThreads = [];
     }
@@ -186,7 +229,7 @@ export async function compileReviewContext({ workspace, trustedRef, changedFiles
   }
   await mkdir(path.dirname(outputPath), { recursive: true });
   const metadataPath = path.join(path.dirname(outputPath), "review_context.metadata.json");
-  const metadata = {
+  const metadata: CompileReviewContextResult = {
     status,
     trusted_ref: trustedRef,
     profile: manifest.profile,
@@ -195,14 +238,25 @@ export async function compileReviewContext({ workspace, trustedRef, changedFiles
     missing_optional_paths: missingOptional,
     blockers,
     total_bytes: totalBytes,
+    missingOptional,
   };
   await writeFile(outputPath, output);
   await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
-  return { ...metadata, missingOptional, blockers };
+  return metadata;
 }
 
-function parseArgs(args) {
-  const options = {};
+interface CliOptions {
+  workspace: string;
+  "trusted-ref": string;
+  "changed-files": string;
+  "org-contexts-dir": string;
+  "max-bytes": string;
+  "open-threads"?: string;
+  [key: string]: string | undefined;
+}
+
+function parseArgs(args: string[]): CliOptions {
+  const options: Record<string, string> = {};
   for (let index = 0; index < args.length; index += 2) {
     if (!args[index]?.startsWith("--") || args[index + 1] === undefined) throw new Error(`Invalid argument ${args[index] ?? ""}`);
     options[args[index].slice(2)] = args[index + 1];
@@ -212,28 +266,28 @@ function parseArgs(args) {
   }
   const maxBytes = Number(options["max-bytes"]);
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new Error("--max-bytes must be a positive integer");
-  return { ...options, maxBytes };
+  return options as unknown as CliOptions;
 }
 
-async function main() {
+async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
-  const changedFiles = JSON.parse(await readFile(options["changed-files"], "utf8"));
-  if (!Array.isArray(changedFiles) || changedFiles.some((value) => typeof value !== "string")) throw new Error("--changed-files must contain a JSON string array");
+  const changedFiles = JSON.parse(await readFile(options["changed-files"], "utf8")) as unknown;
+  if (!Array.isArray(changedFiles) || changedFiles.some((value: unknown) => typeof value !== "string")) throw new Error("--changed-files must contain a JSON string array");
   const outputPath = path.join(options.workspace, ".opencode/tmp/review_context.md");
   const result = await compileReviewContext({
     workspace: options.workspace,
     trustedRef: options["trusted-ref"],
-    changedFiles,
+    changedFiles: changedFiles as string[],
     orgContextsDir: options["org-contexts-dir"],
     outputPath,
-    maxBytes: options.maxBytes,
+    maxBytes: Number(options["max-bytes"]),
     openThreadsPath: options["open-threads"],
   });
   process.stdout.write(`REVIEW_CONTEXT_STATUS=${result.status}\n${JSON.stringify(result, null, 2)}\n`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
+  main().catch((error: Error) => {
     process.stderr.write(`${error.message}\n`);
     process.exitCode = 1;
   });

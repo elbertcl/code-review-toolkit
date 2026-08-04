@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildMeasurementRow } from "./append-measurement.mjs";
+import { buildMeasurementRow } from "./append-measurement.js";
 
 describe("buildMeasurementRow", () => {
   it("produces an ocr lane row with severity tally", () => {

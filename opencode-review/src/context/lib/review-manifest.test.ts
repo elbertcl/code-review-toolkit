@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { validateManifest, selectDirectives } from "./review-manifest.mjs";
+import { validateManifest, selectDirectives } from "./review-manifest.js";
 
 const BASE_MANIFEST = {
   schema_version: 1,
@@ -158,4 +158,3 @@ describe("selectDirectives", () => {
     assert.deepStrictEqual(result, []);
   });
 });
-
