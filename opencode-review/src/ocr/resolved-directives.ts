@@ -1,3 +1,5 @@
+import { readFileSync, writeFileSync } from "node:fs";
+
 interface Thread {
   path: string;
   line: number;
@@ -21,4 +23,16 @@ export function buildResolvedDirectives(threads: Thread[] | null | undefined): O
     });
   }
   return rules;
+}
+
+if (process.argv[1] && process.argv[1].endsWith("resolved-directives.js")) {
+  const inputPath = process.argv[2];
+  const outputPath = process.argv[3];
+  if (!inputPath || !outputPath) {
+    process.stderr.write("Usage: node resolved-directives.js <threads.json> <output.json>\n");
+    process.exit(1);
+  }
+  const threads = JSON.parse(readFileSync(inputPath, "utf8")) as Thread[];
+  const directives = buildResolvedDirectives(threads);
+  writeFileSync(outputPath, JSON.stringify(directives));
 }

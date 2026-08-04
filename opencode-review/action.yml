@@ -496,6 +496,26 @@ runs:
           fs.writeFileSync('/tmp/open-thread-anchors.json', JSON.stringify(anchors));
           core.info(`Collected ${threads.length} review threads via GraphQL (${anchors.filter(a => a.is_resolved).length} resolved, ${anchors.filter(a => a.is_outdated).length} outdated)`);
 
+    - name: Remap OCR anchors (resolved + current lines)
+      if: |
+        inputs.ocr == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      run: node "${{ github.action_path }}/dist/ocr/remap-anchors.js" /tmp/open-thread-anchors.json /tmp/remapped-anchors.json
+
+    - name: Build resolved-thread directives (OCR)
+      if: |
+        inputs.ocr == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      run: node "${{ github.action_path }}/dist/ocr/resolved-directives.js" /tmp/open-threads.json /tmp/resolved-directives.json
+
     - name: Build OCR background
       if: |
         inputs.ocr == 'true' &&
@@ -518,10 +538,14 @@ runs:
         node --input-type=module -e "
           import { compileOcrRules } from '\${{ github.action_path }}/dist/ocr/compile-ocr-rules.js';
           import { parseManifest, validateManifest } from '\${{ github.action_path }}/dist/context/lib/review-manifest.js';
-          import { readFileSync, writeFileSync } from 'node:fs';
+          import { readFileSync, writeFileSync, existsSync } from 'node:fs';
           const manifestText = readFileSync('REVIEW.md', 'utf8');
           const manifest = validateManifest(parseManifest(manifestText));
           const policyBody = readFileSync(manifest.policy_path, 'utf8');
+          let resolvedDirectives = [];
+          if (existsSync('/tmp/resolved-directives.json')) {
+            resolvedDirectives = JSON.parse(readFileSync('/tmp/resolved-directives.json', 'utf8'));
+          }
           const rules = compileOcrRules({
             workspace: process.cwd(),
             trustedRef: process.env.BASE_SHA,
@@ -529,6 +553,7 @@ runs:
             orgContextsDir: '\${{ github.action_path }}/context/contexts',
             manifest,
             policyBody,
+            resolvedDirectives,
           });
           writeFileSync(process.env.RUNNER_TEMP + '/ocr-rule.json', JSON.stringify(rules, null, 2) + '\n');
         "
@@ -569,9 +594,12 @@ runs:
           const fs = require('fs');
           const prNumber = Number(process.env.PR_NUMBER);
           const findings = JSON.parse(fs.readFileSync('/tmp/findings.json', 'utf8'));
-          const anchors = JSON.parse(fs.readFileSync('/tmp/open-thread-anchors.json', 'utf8'));
+          let anchors = [];
+          if (fs.existsSync('/tmp/remapped-anchors.json')) {
+            anchors = JSON.parse(fs.readFileSync('/tmp/remapped-anchors.json', 'utf8'));
+          }
 
-          const { computeFindings } = await import('${{ github.action_path }}/dist/ocr/post-findings.js');
+          const { computeFindings } = await import('\${{ github.action_path }}/dist/ocr/post-findings.js');
           const result = computeFindings({ findings, anchors });
 
           if (result.comments.length > 0) {
@@ -593,7 +621,7 @@ runs:
             });
           }
 
-          fs.writeFileSync('/tmp/ocr-result.json', JSON.stringify({ kept: result.kept.length, dropped: result.dropped.length }));
+          fs.writeFileSync('/tmp/ocr-result.json', JSON.stringify({ kept: result.kept.length, dropped: result.dropped.length, resolved: result.resolved.length }));
 
     - name: Append OCR measurement
       if: |
@@ -616,7 +644,7 @@ runs:
           const row = buildMeasurementRow({
             verdict: findings.length > 0 ? 'flagged' : 'clean',
             findings,
-            suppressed: result.dropped,
+            suppressed: (result.dropped || 0) + (result.resolved || 0),
             tokens: { total: 0 },
             prNumber: Number('$PR_NUMBER'),
             sha: '${{ env.HEAD_SHA }}',

@@ -98,12 +98,18 @@ Consumer setup is a thin workflow that only passes the flag:
     ocr_llm_token: ${{ secrets.OCR_POC_LLM_TOKEN }}
 ```
 
-**Known limitation — OCR vs agent thread awareness:** OCR is stateless and can
-only suppress findings by exact `(path, line)` anchor match. It cannot read
-reply-thread discussion or handle shifted lines like the agent can, so it may
-re-flag findings that were resolved by discussion or moved by later commits.
-The agent path (`ocr: false`, default) uses semantic conversation awareness
-during re-review and is the recommended path for production use.
+**OCR thread awareness — what it does and its ceiling:** OCR uses `--background-file` to carry
+a budgeted (~8KB) reasoning digest that includes:
+- **Resolved-thread human reasoning** — OCR reads *why* a thread was resolved via the digest,
+  so reply semantics reach OCR indirectly without a second LLM pass.
+- **Moved lines** — OCR follows GitHub API-remapped current lines; moved-line anchors are
+  resolved deterministically before dedup.
+- **Resolved-thread suppression** — findings matching a GitHub-resolved thread are classified
+  as `resolved` (suppressed) and do not generate new inline comments.
+
+**Residual gap:** The 8KB budget ceiling means long or many resolved threads are truncated.
+Unresolved-but-disputed threads (not marked "resolved" in GitHub) are anchor-only — no human
+reasoning reaches OCR for active discussions where the reviewer has not clicked "Resolve."
 
 ### Thin POC lanes
 
