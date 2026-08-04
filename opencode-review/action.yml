@@ -82,6 +82,13 @@ inputs:
     description: OCR LLM auth token (required when ocr is true).
     required: false
     default: ""
+  org_profiles:
+    description: >-
+      Comma-separated organization profiles (e.g. backend/security,backend/sre).
+      Required when ocr is true. Valid values - backend/security, backend/sre,
+      frontend/security, frontend/sre.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -535,6 +542,14 @@ runs:
         steps.security.outputs.skip != 'true'
       shell: bash
       run: |
+        ORG_PROFILES_INPUT="${{ inputs.org_profiles }}"
+        if [ "${{ inputs.ocr }}" = "true" ] && [ -z "${ORG_PROFILES_INPUT}" ]; then
+          echo "::error::org_profiles is required when ocr is true. Valid values: backend/security, backend/sre, frontend/security, frontend/sre."
+          gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "**OCR review aborted:** missing required org_profiles input."
+          exit 1
+        fi
         node --input-type=module -e "
           import { compileOcrRules } from '\${{ github.action_path }}/dist/ocr/compile-ocr-rules.js';
           import { parseManifest, validateManifest } from '\${{ github.action_path }}/dist/context/lib/review-manifest.js';
@@ -546,6 +561,7 @@ runs:
           if (existsSync('/tmp/resolved-directives.json')) {
             resolvedDirectives = JSON.parse(readFileSync('/tmp/resolved-directives.json', 'utf8'));
           }
+          const orgProfiles = process.env.ORG_PROFILES_INPUT ? process.env.ORG_PROFILES_INPUT.split(',').map(p => p.trim()).filter(Boolean) : [];
           const rules = compileOcrRules({
             workspace: process.cwd(),
             trustedRef: process.env.BASE_SHA,
@@ -554,6 +570,7 @@ runs:
             manifest,
             policyBody,
             resolvedDirectives,
+            orgProfiles,
           });
           writeFileSync(process.env.RUNNER_TEMP + '/ocr-rule.json', JSON.stringify(rules, null, 2) + '\n');
         "

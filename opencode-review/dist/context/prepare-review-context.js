@@ -105,7 +105,7 @@ function assertTrustedCommit(workspace, trustedRef) {
         throw new Error(`trustedRef ${trustedRef} is not a verified commit`);
     }
 }
-export async function compileReviewContext({ workspace, trustedRef, changedFiles = [], orgContextsDir, outputPath, maxBytes = 500_000, openThreadsPath, }) {
+export async function compileReviewContext({ workspace, trustedRef, changedFiles = [], orgContextsDir, outputPath, maxBytes = 500_000, openThreadsPath, orgProfiles, }) {
     assertTrustedCommit(workspace, trustedRef);
     const manifestText = readAtRef(workspace, trustedRef, MANIFEST_PATH);
     const manifest = validateManifest(parseManifest(manifestText));
@@ -119,7 +119,7 @@ export async function compileReviewContext({ workspace, trustedRef, changedFiles
         sources.push(source);
     };
     const mandatoryRuleIds = [];
-    for (const profile of manifest.organization_profiles) {
+    for (const profile of (orgProfiles ?? [])) {
         const relativePath = ORGANIZATION_PROFILE_ALLOWLIST[profile];
         if (!relativePath)
             throw new Error(`Organization profile ${profile} is not allowlisted`);
@@ -193,7 +193,6 @@ export async function compileReviewContext({ workspace, trustedRef, changedFiles
     const metadata = {
         status,
         trusted_ref: trustedRef,
-        profile: manifest.profile,
         manifest,
         sources: sources.map(({ path: sourcePath, sha256, bytes }) => ({ path: sourcePath, sha256, bytes })),
         missing_optional_paths: missingOptional,
@@ -235,6 +234,7 @@ async function main() {
         outputPath,
         maxBytes: Number(options["max-bytes"]),
         openThreadsPath: options["open-threads"],
+        orgProfiles: options["org-profiles"] ? options["org-profiles"].split(",").map(p => p.trim()).filter(Boolean) : undefined,
     });
     process.stdout.write(`REVIEW_CONTEXT_STATUS=${result.status}\n${JSON.stringify(result, null, 2)}\n`);
 }

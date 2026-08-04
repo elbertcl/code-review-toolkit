@@ -135,6 +135,7 @@ interface CompileReviewContextInput {
   outputPath: string;
   maxBytes?: number;
   openThreadsPath?: string;
+  orgProfiles?: string[];
 }
 
 interface SourceMetadata {
@@ -146,7 +147,6 @@ interface SourceMetadata {
 interface CompileReviewContextResult {
   status: string;
   trusted_ref: string;
-  profile: string;
   manifest: Manifest;
   sources: SourceMetadata[];
   missing_optional_paths: string[];
@@ -156,7 +156,7 @@ interface CompileReviewContextResult {
 }
 
 export async function compileReviewContext({
-  workspace, trustedRef, changedFiles = [], orgContextsDir, outputPath, maxBytes = 500_000, openThreadsPath,
+  workspace, trustedRef, changedFiles = [], orgContextsDir, outputPath, maxBytes = 500_000, openThreadsPath, orgProfiles,
 }: CompileReviewContextInput): Promise<CompileReviewContextResult> {
   assertTrustedCommit(workspace, trustedRef);
   const manifestText = readAtRef(workspace, trustedRef, MANIFEST_PATH);
@@ -170,7 +170,7 @@ export async function compileReviewContext({
     sources.push(source);
   };
   const mandatoryRuleIds: string[] = [];
-  for (const profile of manifest.organization_profiles) {
+  for (const profile of (orgProfiles ?? [])) {
     const relativePath = ORGANIZATION_PROFILE_ALLOWLIST[profile];
     if (!relativePath) throw new Error(`Organization profile ${profile} is not allowlisted`);
     const content = readOrgContext(orgContextsDir, relativePath);
@@ -232,7 +232,6 @@ export async function compileReviewContext({
   const metadata: CompileReviewContextResult = {
     status,
     trusted_ref: trustedRef,
-    profile: manifest.profile,
     manifest,
     sources: sources.map(({ path: sourcePath, sha256, bytes }) => ({ path: sourcePath, sha256, bytes })),
     missing_optional_paths: missingOptional,
@@ -252,6 +251,7 @@ interface CliOptions {
   "org-contexts-dir": string;
   "max-bytes": string;
   "open-threads"?: string;
+  "org-profiles"?: string;
   [key: string]: string | undefined;
 }
 
@@ -282,6 +282,7 @@ async function main(): Promise<void> {
     outputPath,
     maxBytes: Number(options["max-bytes"]),
     openThreadsPath: options["open-threads"],
+    orgProfiles: options["org-profiles"] ? options["org-profiles"].split(",").map(p => p.trim()).filter(Boolean) : undefined,
   });
   process.stdout.write(`REVIEW_CONTEXT_STATUS=${result.status}\n${JSON.stringify(result, null, 2)}\n`);
 }

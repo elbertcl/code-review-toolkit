@@ -2,7 +2,7 @@ import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 export const GAP_MARKER = "ASTRO_REVIEW_CONTEXT_INCOMPLETE";
 const MANIFEST_KEYS = new Set([
-    "schema_version", "profile", "organization_profiles", "policy_path",
+    "schema_version", "policy_path",
     "verification_commands", "required_context", "optional_context",
     "conditional_context", "required_checks", "diff_limits", "diff_override",
     "docs_only_paths", "excluded_paths", "review_directives",
@@ -12,10 +12,6 @@ const ROLES = new Set([
     "conventions", "api-contract",
 ]);
 const CHECK_CATEGORIES = new Set(["test", "security", "policy"]);
-const PROFILE_ALLOWLIST = {
-    backend: ["backend/security", "backend/sre"],
-    frontend: ["frontend/security", "frontend/sre"],
-};
 function fail(message) {
     throw new Error(`Invalid review manifest: ${message}`);
 }
@@ -109,10 +105,8 @@ export function validateManifest(manifest) {
         fail("schema_version must be 1 or 2");
     if ("review_directives" in m && m.schema_version !== 2)
         fail("review_directives requires schema_version 2");
-    if (!(m.profile in PROFILE_ALLOWLIST))
-        fail("profile must be backend or frontend");
-    if (JSON.stringify(m.organization_profiles) !== JSON.stringify(PROFILE_ALLOWLIST[m.profile])) {
-        fail(`organization_profiles must be ${PROFILE_ALLOWLIST[m.profile].join(", ")}`);
+    if (m.profile !== undefined || m.organization_profiles !== undefined) {
+        fail("profile/organization_profiles are no longer repo-owned; set org_profiles in the workflow");
     }
     validateExactPath(m.policy_path, "policy_path");
     requireNonEmptyStrings(m.verification_commands, "verification_commands");

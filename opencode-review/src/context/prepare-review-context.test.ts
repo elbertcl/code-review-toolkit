@@ -11,8 +11,6 @@ const MANIFEST = `<!-- astro-review-manifest:start -->
 \`\`\`json
 {
   "schema_version": 1,
-  "profile": "backend",
-  "organization_profiles": ["backend/security", "backend/sre"],
   "policy_path": "docs-policy.md",
   "verification_commands": ["make lint"],
   "required_context": [{"path": "AGENTS.md", "role": "instructions"}],
@@ -61,6 +59,7 @@ test("compileReviewContext reads org contexts from the action-checkout filesyste
     orgContextsDir: orgDir,
     outputPath,
     maxBytes: 500000,
+    orgProfiles: ["backend/security", "backend/sre"],
   });
   const body = readFileSync(outputPath, "utf8");
   assert.match(body, /# org sec body/);
@@ -82,6 +81,7 @@ test("CLI prints REVIEW_CONTEXT_STATUS and honors --org-contexts-dir", () => {
     "--changed-files", changed,
     "--org-contexts-dir", orgDir,
     "--max-bytes", "500000",
+    "--org-profiles", "backend/security,backend/sre",
   ], { encoding: "utf8" });
   assert.match(out, /^REVIEW_CONTEXT_STATUS=READY$/m);
   rmSync(dir, { recursive: true, force: true });
@@ -113,6 +113,7 @@ test("compileReviewContext appends open-threads section when provided", async ()
   const result = await compileReviewContext({
     workspace: dir, trustedRef: sha, changedFiles: [], orgContextsDir: orgDir,
     outputPath, maxBytes: 500000, openThreadsPath: threadsPath,
+    orgProfiles: ["backend/security", "backend/sre"],
   });
   assert.ok(result.sources.some((s) => s.path === "pr/open-threads"));
   rmSync(dir, { recursive: true, force: true });

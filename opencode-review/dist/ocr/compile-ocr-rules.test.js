@@ -14,8 +14,6 @@ function createOrgContextsDir() {
 const POLICY_BODY = "# Review Policy\n\n## Section 1: Business Correctness\n\n- **Invariant rule enforcement:** Every RULE-XXX-NN must be verified.\n- **sellerID source:** Must come from request header on non-internal endpoints.\n\n## Section 2: Performance\n\n- **N+1 DB calls:** Do not call DB per iteration.\n- **Missing pagination:** Use PageSizeNoLimit on Scan* calls.\n";
 const MANIFEST = {
     schema_version: 2,
-    profile: "backend",
-    organization_profiles: ["backend/security", "backend/sre"],
     policy_path: "docs/review-dimensions.md",
     verification_commands: ["make lint"],
     required_context: [
@@ -47,6 +45,7 @@ const MANIFEST = {
     docs_only_paths: ["**/*.md"],
     excluded_paths: ["mocks/**", "vendor/**"],
 };
+const ORG_PROFILES = ["backend/security", "backend/sre"];
 describe("compileOcrRules", () => {
     let orgDir;
     before(() => {
@@ -61,6 +60,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: [],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -78,6 +78,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: ["internal/domain/creditmanager/foo.go"],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -92,6 +93,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: ["internal/domain/creditmanager/foo.go"],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -108,6 +110,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: ["internal/domain/adindexer/foo.go"],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -122,6 +125,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: ["internal/db/foo.go"],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -137,6 +141,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: ["internal/db/foo.go"],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -175,6 +180,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: [],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -192,6 +198,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: [],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
             resolvedDirectives,
@@ -211,6 +218,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: [],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });

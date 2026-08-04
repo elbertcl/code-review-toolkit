@@ -41,8 +41,6 @@ export interface DiffLimits {
 
 export interface Manifest {
   schema_version: number;
-  profile: string;
-  organization_profiles: string[];
   policy_path: string;
   verification_commands: string[];
   required_context: ContextEntry[];
@@ -57,7 +55,7 @@ export interface Manifest {
 }
 
 const MANIFEST_KEYS = new Set([
-  "schema_version", "profile", "organization_profiles", "policy_path",
+  "schema_version", "policy_path",
   "verification_commands", "required_context", "optional_context",
   "conditional_context", "required_checks", "diff_limits", "diff_override",
   "docs_only_paths", "excluded_paths", "review_directives",
@@ -67,10 +65,6 @@ const ROLES = new Set([
   "conventions", "api-contract",
 ]);
 const CHECK_CATEGORIES = new Set(["test", "security", "policy"]);
-const PROFILE_ALLOWLIST: Record<string, string[]> = {
-  backend: ["backend/security", "backend/sre"],
-  frontend: ["frontend/security", "frontend/sre"],
-};
 
 function fail(message: string): never {
   throw new Error(`Invalid review manifest: ${message}`);
@@ -153,9 +147,8 @@ export function validateManifest(manifest: unknown): Manifest {
   for (const key of MANIFEST_KEYS) if (!(key in m) && key !== "review_directives") fail(`missing key ${key}`);
   if (m.schema_version !== 1 && m.schema_version !== 2) fail("schema_version must be 1 or 2");
   if ("review_directives" in m && m.schema_version !== 2) fail("review_directives requires schema_version 2");
-  if (!(m.profile as string in PROFILE_ALLOWLIST)) fail("profile must be backend or frontend");
-  if (JSON.stringify(m.organization_profiles) !== JSON.stringify(PROFILE_ALLOWLIST[m.profile as string])) {
-    fail(`organization_profiles must be ${PROFILE_ALLOWLIST[m.profile as string].join(", ")}`);
+  if (m.profile !== undefined || m.organization_profiles !== undefined) {
+    fail("profile/organization_profiles are no longer repo-owned; set org_profiles in the workflow");
   }
   validateExactPath(m.policy_path, "policy_path");
   requireNonEmptyStrings(m.verification_commands, "verification_commands");

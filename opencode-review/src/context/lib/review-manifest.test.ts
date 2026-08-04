@@ -4,8 +4,6 @@ import { validateManifest, selectDirectives } from "./review-manifest.js";
 
 const BASE_MANIFEST = {
   schema_version: 1,
-  profile: "backend",
-  organization_profiles: ["backend/security", "backend/sre"],
   policy_path: "docs/policy.md",
   verification_commands: ["make lint"],
   required_context: [],
