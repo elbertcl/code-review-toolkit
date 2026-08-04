@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
-import { compileReviewContext } from "./prepare-review-context.mjs";
+import { buildOpenThreadsSection, compileReviewContext } from "./prepare-review-context.mjs";
 
 const MANIFEST = `<!-- astro-review-manifest:start -->
 \`\`\`json
@@ -87,6 +87,37 @@ test("CLI prints REVIEW_CONTEXT_STATUS and honors --org-contexts-dir", () => {
     "--max-bytes", "500000",
   ], { encoding: "utf8" });
   assert.match(out, /^REVIEW_CONTEXT_STATUS=READY$/m);
+  rmSync(dir, { recursive: true, force: true });
+  rmSync(orgDir, { recursive: true, force: true });
+});
+
+test("buildOpenThreadsSection returns null for empty input", () => {
+  assert.equal(buildOpenThreadsSection([]), null);
+  assert.equal(buildOpenThreadsSection(null), null);
+});
+
+test("buildOpenThreadsSection renders a directive and one line per thread", () => {
+  const section = buildOpenThreadsSection([
+    { path: "internal/a.go", line: 10, latest_author: "alice", latest_body_excerpt: "please rename" },
+  ]);
+  assert.equal(section.path, "pr/open-threads");
+  assert.match(section.rendered, /Do NOT re-flag/);
+  assert.match(section.rendered, /internal\/a\.go:10/);
+});
+
+test("compileReviewContext appends open-threads section when provided", async () => {
+  const { dir, sha } = initRepo();
+  const orgDir = initOrgContextsDir();
+  const threadsPath = join(dir, "threads.json");
+  writeFileSync(threadsPath, JSON.stringify([
+    { path: "internal/a.go", line: 5, latest_author: "alice", latest_body_excerpt: "old note" },
+  ]));
+  const outputPath = join(dir, ".opencode/tmp/review_context.md");
+  const result = await compileReviewContext({
+    workspace: dir, trustedRef: sha, changedFiles: [], orgContextsDir: orgDir,
+    outputPath, maxBytes: 500000, openThreadsPath: threadsPath,
+  });
+  assert.ok(result.sources.some((s) => s.path === "pr/open-threads"));
   rmSync(dir, { recursive: true, force: true });
   rmSync(orgDir, { recursive: true, force: true });
 });
