@@ -58,6 +58,18 @@ inputs:
     description: Skip the toolkit's built-in context preparation (use when the caller provides its own compiled context at review_context.md).
     required: false
     default: "false"
+  serena:
+    description: Enable Serena MCP symbol lookup during review (fail-open if unavailable).
+    required: false
+    default: "true"
+  serena_sha:
+    description: Exact 40-char commit SHA of oraios/serena to install.
+    required: false
+    default: "dd12fa032f473a53595763b8d731817e19c15475"
+  fail_closed_context:
+    description: Abort the review when compiled context status is BLOCKED.
+    required: false
+    default: "true"
 
 runs:
   using: composite
