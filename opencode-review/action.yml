@@ -721,6 +721,23 @@ runs:
           fi
         fi
 
+    # ── Run Serena fetcher for OCR context ──────────────────────────────────
+    - name: Fetch Serena context (OCR)
+      if: |
+        inputs.ocr == 'true' &&
+        steps.serena.outputs.status == 'available' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      run: |
+        node "${{ github.action_path }}/dist/context/fetch-serena-context.js" \
+          "$PWD" \
+          "$RUNNER_TEMP/changed-files.json" \
+          "20" \
+          /tmp/serena-context.md || true
+
     # ── Prepare workspace-local OpenCode instruction files ───────────────────
     - name: Prepare OpenCode instruction files
       if: |
