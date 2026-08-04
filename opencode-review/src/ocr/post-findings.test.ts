@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { computeFindings } from "./post-findings.mjs";
+import { computeFindings } from "./post-findings.js";
 
 describe("computeFindings", () => {
   const sampleFindings = [
