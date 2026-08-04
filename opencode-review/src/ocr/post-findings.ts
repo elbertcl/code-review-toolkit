@@ -31,6 +31,7 @@ interface ComputeFindingsResult {
   resolved: Finding[];
   comments: Comment[];
   message: string | null;
+  verdictComment: string | null;
 }
 
 export function computeFindings({ findings, anchors }: ComputeFindingsInput): ComputeFindingsResult {
@@ -77,5 +78,40 @@ export function computeFindings({ findings, anchors }: ComputeFindingsInput): Co
     }
   }
 
-  return { kept, dropped, resolved, comments, message };
+  return { kept, dropped, resolved, comments, message, verdictComment: null };
+}
+
+interface BuildVerdictInput {
+  findings: Finding[];
+  headSha: string;
+  verdictMarker: string;
+  headMarker: string;
+}
+
+export function buildVerdictComment({ findings, headSha, verdictMarker, headMarker }: BuildVerdictInput): string {
+  const criticalCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "CRITICAL").length;
+  const highCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "HIGH").length;
+  const mediumCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "MEDIUM").length;
+  const lowCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "LOW").length;
+  const total = findings.length;
+  const verdict = criticalCount > 0 || highCount > 0 ? "FAIL" : "PASS";
+
+  const items = findings.map((f) => ({
+    severity: f.severity ?? "INFO",
+    path: f.path,
+    line: f.line ?? f.start_line ?? f.end_line ?? 0,
+    title: f.message.split(".")[0] || f.message,
+    body: f.message,
+    suggested_fix: "",
+  }));
+
+  return `## OCR Review Verdict
+
+**Verdict: ${verdict}** — ${total} finding${total !== 1 ? "s" : ""} (${criticalCount} CRITICAL, ${highCount} HIGH, ${mediumCount} MEDIUM, ${lowCount} LOW)
+
+${headMarker} ${headSha} -->
+${verdictMarker}
+<!-- findings-json-start
+${JSON.stringify(items, null, 2)}
+findings-json-end -->`;
 }

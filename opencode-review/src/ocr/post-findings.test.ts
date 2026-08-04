@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { computeFindings } from "./post-findings.js";
+import { computeFindings, buildVerdictComment } from "./post-findings.js";
 
 describe("computeFindings", () => {
   const sampleFindings = [
@@ -78,5 +78,65 @@ describe("computeFindings", () => {
     assert.match(result.message!, /3 previously flagged/);
     assert.match(result.message!, /1 still open/);
     assert.match(result.message!, /2 resolved/);
+  });
+});
+
+describe("buildVerdictComment", () => {
+  it("returns PASS verdict with markers when no findings", () => {
+    const result = buildVerdictComment({
+      findings: [],
+      headSha: "abc123def456",
+      verdictMarker: "<!-- opencode-pr-review -->",
+      headMarker: "<!-- reviewed-head:",
+    });
+    assert.match(result, /PASS/);
+    assert.match(result, /abc123def456/);
+    assert.match(result, /opencode-pr-review/);
+    assert.match(result, /findings-json-start/);
+    assert.match(result, /\[\]/);
+  });
+
+  it("returns FAIL verdict with CRITICAL findings", () => {
+    const findings = [
+      { path: "a.go", line: 10, severity: "CRITICAL", category: "Security", message: "XSS vulnerability" },
+    ];
+    const result = buildVerdictComment({
+      findings,
+      headSha: "abc123",
+      verdictMarker: "<!-- marker -->",
+      headMarker: "<!-- head:",
+    });
+    assert.match(result, /FAIL/);
+    assert.match(result, /1 CRITICAL/);
+  });
+
+  it("returns PASS verdict with only LOW findings", () => {
+    const findings = [
+      { path: "a.go", line: 10, severity: "LOW", category: "Style", message: "formatting" },
+    ];
+    const result = buildVerdictComment({
+      findings,
+      headSha: "abc",
+      verdictMarker: "<!-- m -->",
+      headMarker: "<!-- h:",
+    });
+    assert.match(result, /PASS/);
+    assert.match(result, /0 CRITICAL, 0 HIGH/);
+  });
+
+  it("includes findings JSON block", () => {
+    const findings = [
+      { path: "a.go", line: 5, severity: "HIGH", message: "N+1 query in loop" },
+    ];
+    const result = buildVerdictComment({
+      findings,
+      headSha: "sha",
+      verdictMarker: "<!-- v -->",
+      headMarker: "<!-- h:",
+    });
+    assert.match(result, /"severity": "HIGH"/);
+    assert.match(result, /"path": "a.go"/);
+    assert.match(result, /"line": 5/);
+    assert.match(result, /findings-json-end/);
   });
 });
