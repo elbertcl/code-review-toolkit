@@ -365,35 +365,10 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         PR_NUMBER="${{ inputs.issue_number || github.event.issue.number }}"
+        STATUS="${{ steps.context.outputs.verdict }}"
+        SOURCES=$(grep -c "^## Source: " review_context.md || echo 0)
         LINE_COUNT=$(wc -l < review_context.md | tr -d ' ')
-
-        DOMAINS=$(grep "^## Domain:" review_context.md | sed 's/^## Domain: //' || true)
-        DOMAIN_COUNT=$(echo "$DOMAINS" | grep -c '[^[:space:]]' || true)
-
-        HAS_RULES=$(grep -cE "^## (AGENTS|CLAUDE)\.md" review_context.md || true)
-        HAS_CROSS=$(grep -c "^## Cross-domain invariants" review_context.md || true)
-
-        ROWS=""
-        while IFS= read -r domain; do
-          [ -z "$domain" ] && continue
-          INV=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Invariants" || true)
-          ARCH=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Architecture" || true)
-          SPEC=$(awk "/^## Domain: ${domain}\$/{f=1;next} f && /^## Domain: /{exit} f" review_context.md | grep -c "^### Testspecs" || true)
-          ROWS="${ROWS}| \`${domain}\` | $([ "$INV" -gt 0 ] && echo "✅" || echo "—") | $([ "$ARCH" -gt 0 ] && echo "✅" || echo "—") | $([ "$SPEC" -gt 0 ] && echo "✅" || echo "—") |\n"
-        done <<< "$DOMAINS"
-
-        BASELINE=""
-        [ "$HAS_RULES" -gt 0 ] && BASELINE="Repository rules ✅"
-        [ "$HAS_CROSS" -gt 0 ] && BASELINE="${BASELINE} · Cross-domain invariants ✅"
-        [ -z "$BASELINE" ] && BASELINE="⚠️ No baseline docs found"
-
-        if [ "$DOMAIN_COUNT" -eq 0 ]; then
-          DOMAIN_SECTION="⚠️ **No domains detected** — only baseline context was loaded. Review may lack domain-specific invariants and testspecs."
-        else
-          DOMAIN_SECTION="$(printf "| Domain | Invariants | Architecture | Testspecs |\n|---|---|---|---|\n%b" "$ROWS")"
-        fi
-
-        gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Review context loaded** — %s lines · %s domain(s)\n\n%s\n\n> %s' "$LINE_COUNT" "$DOMAIN_COUNT" "$DOMAIN_SECTION" "$BASELINE")"
+        gh pr comment "$PR_NUMBER" --body "$(printf '📋 **Review context compiled** — status \`%s\` · %s source(s) · %s lines' "$STATUS" "$SOURCES" "$LINE_COUNT")"
 
     # ── Prepare workspace-local OpenCode instruction files ───────────────────
     - name: Prepare OpenCode instruction files
