@@ -1,0 +1,13 @@
+{
+  "locked": {
+    "excluded_paths": ["mocks/**", "vendor/**"],
+    "diff_override": {"label": "ai-review-size-approved", "authorized_associations": ["OWNER", "MEMBER"]},
+    "review_directives": [
+      {"when_changed": ["internal/**/db/**"], "directive": "DB-layer code follows docs/conventions/database.md. Treat existing DB-layer structure as compliant: do NOT propose structural or stylistic refactors unless a named RULE-XXX-NN invariant is violated or a specific AGENTS.md rule is broken."}
+    ]
+  },
+  "bounded": {
+    "diff_limits": {"changed_files": 100, "changed_lines": 5000},
+    "docs_only_paths": ["**/*.md", "docs/**"]
+  }
+}

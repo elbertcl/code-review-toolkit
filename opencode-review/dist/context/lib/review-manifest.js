@@ -2,7 +2,7 @@ import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 export const GAP_MARKER = "ASTRO_REVIEW_CONTEXT_INCOMPLETE";
 const MANIFEST_KEYS = new Set([
-    "schema_version", "profile", "organization_profiles", "policy_path",
+    "schema_version", "policy_path",
     "verification_commands", "required_context", "optional_context",
     "conditional_context", "required_checks", "diff_limits", "diff_override",
     "docs_only_paths", "excluded_paths", "review_directives",
@@ -12,10 +12,6 @@ const ROLES = new Set([
     "conventions", "api-contract",
 ]);
 const CHECK_CATEGORIES = new Set(["test", "security", "policy"]);
-const PROFILE_ALLOWLIST = {
-    backend: ["backend/security", "backend/sre"],
-    frontend: ["frontend/security", "frontend/sre"],
-};
 function fail(message) {
     throw new Error(`Invalid review manifest: ${message}`);
 }
@@ -109,10 +105,8 @@ export function validateManifest(manifest) {
         fail("schema_version must be 1 or 2");
     if ("review_directives" in m && m.schema_version !== 2)
         fail("review_directives requires schema_version 2");
-    if (!(m.profile in PROFILE_ALLOWLIST))
-        fail("profile must be backend or frontend");
-    if (JSON.stringify(m.organization_profiles) !== JSON.stringify(PROFILE_ALLOWLIST[m.profile])) {
-        fail(`organization_profiles must be ${PROFILE_ALLOWLIST[m.profile].join(", ")}`);
+    if (m.profile !== undefined || m.organization_profiles !== undefined) {
+        fail("profile/organization_profiles are no longer repo-owned; set org_profiles in the workflow");
     }
     validateExactPath(m.policy_path, "policy_path");
     requireNonEmptyStrings(m.verification_commands, "verification_commands");
@@ -265,4 +259,41 @@ export const ORGANIZATION_PROFILE_ALLOWLIST = Object.freeze({
     "frontend/security": "frontend/security.md",
     "frontend/sre": "frontend/sre.md",
 });
+export function mergeWithDefaults(manifest, defaults) {
+    const merged = { ...manifest };
+    if (defaults.locked.excluded_paths) {
+        merged.excluded_paths = [...new Set([...defaults.locked.excluded_paths, ...(manifest.excluded_paths ?? [])])];
+    }
+    if (defaults.locked.diff_override) {
+        const repoDO = manifest.diff_override;
+        const defDO = defaults.locked.diff_override;
+        if (repoDO && JSON.stringify(repoDO) !== JSON.stringify(defDO)) {
+            throw new Error("diff_override is LOCKED by the toolkit; repo must use the default value or omit it");
+        }
+        merged.diff_override = defDO;
+    }
+    if (defaults.locked.review_directives) {
+        const repoDirs = manifest.review_directives ?? [];
+        merged.review_directives = [...defaults.locked.review_directives, ...repoDirs];
+    }
+    if (defaults.bounded.diff_limits) {
+        const repoDL = manifest.diff_limits;
+        if (repoDL) {
+            if (repoDL.changed_files > defaults.bounded.diff_limits.changed_files) {
+                throw new Error(`diff_limits.changed_files ${repoDL.changed_files} exceeds org ceiling ${defaults.bounded.diff_limits.changed_files}`);
+            }
+            if (repoDL.changed_lines > defaults.bounded.diff_limits.changed_lines) {
+                throw new Error(`diff_limits.changed_lines ${repoDL.changed_lines} exceeds org ceiling ${defaults.bounded.diff_limits.changed_lines}`);
+            }
+            merged.diff_limits = repoDL;
+        }
+        else {
+            merged.diff_limits = defaults.bounded.diff_limits;
+        }
+    }
+    if (defaults.bounded.docs_only_paths) {
+        merged.docs_only_paths = [...new Set([...defaults.bounded.docs_only_paths, ...(manifest.docs_only_paths ?? [])])];
+    }
+    return merged;
+}
 //# sourceMappingURL=review-manifest.js.map

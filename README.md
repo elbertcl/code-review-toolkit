@@ -98,24 +98,59 @@ Consumer setup is a thin workflow that only passes the flag:
     ocr_llm_token: ${{ secrets.OCR_POC_LLM_TOKEN }}
 ```
 
-**Known limitation — OCR vs agent thread awareness:** OCR is stateless and can
-only suppress findings by exact `(path, line)` anchor match. It cannot read
-reply-thread discussion or handle shifted lines like the agent can, so it may
-re-flag findings that were resolved by discussion or moved by later commits.
-The agent path (`ocr: false`, default) uses semantic conversation awareness
-during re-review and is the recommended path for production use.
+**OCR thread awareness — what it does and its ceiling:** OCR uses `--background-file` to carry
+a budgeted (~8KB) reasoning digest that includes:
+- **Resolved-thread human reasoning** — OCR reads *why* a thread was resolved via the digest,
+  so reply semantics reach OCR indirectly without a second LLM pass.
+- **Moved lines** — OCR follows GitHub API-remapped current lines; moved-line anchors are
+  resolved deterministically before dedup.
+- **Resolved-thread suppression** — findings matching a GitHub-resolved thread are classified
+  as `resolved` (suppressed) and do not generate new inline comments.
 
-### Thin POC lanes
+**Residual gap:** The 8KB budget ceiling means long or many resolved threads are truncated.
+Unresolved-but-disputed threads (not marked "Resolved" in GitHub) are anchor-only — no human
+reasoning reaches OCR for active discussions where the reviewer has not clicked "Resolve."
 
-All review lanes consume `REVIEW.md` as the single source of truth via the
-toolkit. The consuming repo only adds trigger workflows — no inline compile,
-findings-processing, or OCR-install logic:
+### Serena context fetcher
 
-| Lane | Trigger | Toolkit flags |
-|---|---|---|
-| `/review` (agent+Serena) | `/review` comment | `serena: true` (default) |
-| `/review-serena` (POC) | `/review-serena` comment | `serena: true` |
-| `/review-ocr` (POC) | `/review-ocr` comment | `ocr: true` |
+A deterministic MCP stdio client (no LLM) drives Serena headless in CI to produce a bounded
+~2000-char **pointer artifact** for the OCR `--background-file`. The fetcher:
+- Enumerates symbols per changed file via `get_symbols_overview`
+- Resolves cross-file references via `find_referencing_symbols`
+- Caps enumeration by changed-file count (overflow → skip enrichment for overflow files)
+- **Fails open** — if Serena is unavailable, OCR proceeds on diff + rules alone
+
+### `org_profiles` input (required for OCR)
+
+Consuming workflows must pass the organization profiles as a comma-separated input:
+
+```yaml
+with:
+  ocr: true
+  org_profiles: backend/security,backend/sre
+```
+
+Valid values: `backend/security`, `backend/sre`, `frontend/security`, `frontend/sre`.
+Multi-profile repos use both backend and frontend profiles; `fullstack` = all four.
+**Fail-closed:** empty or unknown profiles abort the review.
+
+### Tiered defaults
+
+The toolkit ships locked and bounded defaults (`context/defaults/manifest-defaults.json`):
+- **LOCKED** fields (union/replace): `excluded_paths`, `diff_override`, `review_directives` — repos cannot loosen, only add
+- **BOUNDED** fields (ceiling): `diff_limits` (max 100 files / 5000 lines), `docs_only_paths` (union)
+
+Repos omit these fields to inherit; override only with stricter values.
+
+### `REVIEW.example.md`
+
+An annotated example manifest ships in `context/defaults/REVIEW.example.md` for onboarding
+new repos.
+
+### Thin POC lanes (deprecated — OCR is the sole engine in v4.3+)
+
+The OCR engine is the sole review path since v4.3.0. All review trigger workflows funnel
+into one OCR-based lane. The agent lane (`/review`, `/review-serena`) has been removed.
 
 ## Development (TypeScript, v4.2+)
 

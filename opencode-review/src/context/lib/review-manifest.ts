@@ -41,8 +41,6 @@ export interface DiffLimits {
 
 export interface Manifest {
   schema_version: number;
-  profile: string;
-  organization_profiles: string[];
   policy_path: string;
   verification_commands: string[];
   required_context: ContextEntry[];
@@ -57,7 +55,7 @@ export interface Manifest {
 }
 
 const MANIFEST_KEYS = new Set([
-  "schema_version", "profile", "organization_profiles", "policy_path",
+  "schema_version", "policy_path",
   "verification_commands", "required_context", "optional_context",
   "conditional_context", "required_checks", "diff_limits", "diff_override",
   "docs_only_paths", "excluded_paths", "review_directives",
@@ -67,10 +65,6 @@ const ROLES = new Set([
   "conventions", "api-contract",
 ]);
 const CHECK_CATEGORIES = new Set(["test", "security", "policy"]);
-const PROFILE_ALLOWLIST: Record<string, string[]> = {
-  backend: ["backend/security", "backend/sre"],
-  frontend: ["frontend/security", "frontend/sre"],
-};
 
 function fail(message: string): never {
   throw new Error(`Invalid review manifest: ${message}`);
@@ -153,9 +147,8 @@ export function validateManifest(manifest: unknown): Manifest {
   for (const key of MANIFEST_KEYS) if (!(key in m) && key !== "review_directives") fail(`missing key ${key}`);
   if (m.schema_version !== 1 && m.schema_version !== 2) fail("schema_version must be 1 or 2");
   if ("review_directives" in m && m.schema_version !== 2) fail("review_directives requires schema_version 2");
-  if (!(m.profile as string in PROFILE_ALLOWLIST)) fail("profile must be backend or frontend");
-  if (JSON.stringify(m.organization_profiles) !== JSON.stringify(PROFILE_ALLOWLIST[m.profile as string])) {
-    fail(`organization_profiles must be ${PROFILE_ALLOWLIST[m.profile as string].join(", ")}`);
+  if (m.profile !== undefined || m.organization_profiles !== undefined) {
+    fail("profile/organization_profiles are no longer repo-owned; set org_profiles in the workflow");
   }
   validateExactPath(m.policy_path, "policy_path");
   requireNonEmptyStrings(m.verification_commands, "verification_commands");
@@ -295,3 +288,58 @@ export const ORGANIZATION_PROFILE_ALLOWLIST: Readonly<Record<string, string>> = 
   "frontend/security": "frontend/security.md",
   "frontend/sre": "frontend/sre.md",
 });
+
+export interface ManifestDefaults {
+  locked: {
+    excluded_paths?: string[];
+    diff_override?: DiffOverride;
+    review_directives?: ReviewDirectiveEntry[];
+  };
+  bounded: {
+    diff_limits?: DiffLimits;
+    docs_only_paths?: string[];
+  };
+}
+
+export function mergeWithDefaults(manifest: Manifest, defaults: ManifestDefaults): Manifest {
+  const merged = { ...manifest };
+
+  if (defaults.locked.excluded_paths) {
+    merged.excluded_paths = [...new Set([...defaults.locked.excluded_paths, ...(manifest.excluded_paths ?? [])])];
+  }
+
+  if (defaults.locked.diff_override) {
+    const repoDO = manifest.diff_override;
+    const defDO = defaults.locked.diff_override;
+    if (repoDO && JSON.stringify(repoDO) !== JSON.stringify(defDO)) {
+      throw new Error("diff_override is LOCKED by the toolkit; repo must use the default value or omit it");
+    }
+    merged.diff_override = defDO;
+  }
+
+  if (defaults.locked.review_directives) {
+    const repoDirs = manifest.review_directives ?? [];
+    merged.review_directives = [...defaults.locked.review_directives, ...repoDirs];
+  }
+
+  if (defaults.bounded.diff_limits) {
+    const repoDL = manifest.diff_limits;
+    if (repoDL) {
+      if (repoDL.changed_files > defaults.bounded.diff_limits.changed_files) {
+        throw new Error(`diff_limits.changed_files ${repoDL.changed_files} exceeds org ceiling ${defaults.bounded.diff_limits.changed_files}`);
+      }
+      if (repoDL.changed_lines > defaults.bounded.diff_limits.changed_lines) {
+        throw new Error(`diff_limits.changed_lines ${repoDL.changed_lines} exceeds org ceiling ${defaults.bounded.diff_limits.changed_lines}`);
+      }
+      merged.diff_limits = repoDL;
+    } else {
+      merged.diff_limits = defaults.bounded.diff_limits;
+    }
+  }
+
+  if (defaults.bounded.docs_only_paths) {
+    merged.docs_only_paths = [...new Set([...defaults.bounded.docs_only_paths, ...(manifest.docs_only_paths ?? [])])];
+  }
+
+  return merged;
+}

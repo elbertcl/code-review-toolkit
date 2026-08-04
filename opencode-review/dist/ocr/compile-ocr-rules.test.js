@@ -14,8 +14,6 @@ function createOrgContextsDir() {
 const POLICY_BODY = "# Review Policy\n\n## Section 1: Business Correctness\n\n- **Invariant rule enforcement:** Every RULE-XXX-NN must be verified.\n- **sellerID source:** Must come from request header on non-internal endpoints.\n\n## Section 2: Performance\n\n- **N+1 DB calls:** Do not call DB per iteration.\n- **Missing pagination:** Use PageSizeNoLimit on Scan* calls.\n";
 const MANIFEST = {
     schema_version: 2,
-    profile: "backend",
-    organization_profiles: ["backend/security", "backend/sre"],
     policy_path: "docs/review-dimensions.md",
     verification_commands: ["make lint"],
     required_context: [
@@ -47,6 +45,7 @@ const MANIFEST = {
     docs_only_paths: ["**/*.md"],
     excluded_paths: ["mocks/**", "vendor/**"],
 };
+const ORG_PROFILES = ["backend/security", "backend/sre"];
 describe("compileOcrRules", () => {
     let orgDir;
     before(() => {
@@ -61,6 +60,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: [],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -78,6 +78,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: ["internal/domain/creditmanager/foo.go"],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -92,6 +93,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: ["internal/domain/creditmanager/foo.go"],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -108,6 +110,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: ["internal/domain/adindexer/foo.go"],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -122,6 +125,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: ["internal/db/foo.go"],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -137,6 +141,7 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: ["internal/db/foo.go"],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
@@ -175,12 +180,49 @@ describe("compileOcrRules", () => {
             trustedRef: "0000000000000000000000000000000000000000",
             changedFiles: [],
             orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
             manifest: MANIFEST,
             policyBody: POLICY_BODY,
         });
         assert.ok(result.include.includes("internal/**/*.go"));
         assert.ok(result.include.includes("cmd/**/*.go"));
         assert.ok(result.include.includes("pkg/**/*.go"));
+    });
+    it("prepends resolved directives before base catch-all rule", () => {
+        const resolvedDirectives = [
+            { path: "internal/a.go", rule: "Do NOT re-flag resolved finding at this anchor." },
+            { path: "internal/b.go", rule: "Do NOT re-flag resolved finding at this anchor." },
+        ];
+        const result = compileOcrRules({
+            workspace: ".",
+            trustedRef: "0000000000000000000000000000000000000000",
+            changedFiles: [],
+            orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
+            manifest: MANIFEST,
+            policyBody: POLICY_BODY,
+            resolvedDirectives,
+        });
+        const baseIdx = result.rules.findIndex((r) => r.path === "internal/**/*.go");
+        const resolvedAIdx = result.rules.findIndex((r) => r.path === "internal/a.go");
+        const resolvedBIdx = result.rules.findIndex((r) => r.path === "internal/b.go");
+        assert.ok(baseIdx >= 0, "base rule should exist");
+        assert.ok(resolvedAIdx >= 0, "resolved directive for a.go should exist");
+        assert.ok(resolvedBIdx >= 0, "resolved directive for b.go should exist");
+        assert.ok(resolvedAIdx < baseIdx, "resolved directive should precede base catch-all");
+        assert.ok(resolvedBIdx < baseIdx, "resolved directive should precede base catch-all");
+    });
+    it("resolvedDirectives is optional and does not affect output when absent", () => {
+        const result = compileOcrRules({
+            workspace: ".",
+            trustedRef: "0000000000000000000000000000000000000000",
+            changedFiles: [],
+            orgContextsDir: orgDir,
+            orgProfiles: ORG_PROFILES,
+            manifest: MANIFEST,
+            policyBody: POLICY_BODY,
+        });
+        assert.ok(result.rules.length >= 1, "should have at least the base rule");
     });
 });
 //# sourceMappingURL=compile-ocr-rules.test.js.map

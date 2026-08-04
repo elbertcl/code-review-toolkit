@@ -70,10 +70,11 @@ function buildBaseRule(options) {
     text += `. Review all files against the following dimensions:\n${policyDimensions}\n\nOrganization mandatory rules (override repo policy):\n${orgRulesBlk}`;
     return { path: "internal/**/*.go", rule: text };
 }
-export function compileOcrRules({ orgContextsDir, manifest, policyBody }) {
+export function compileOcrRules({ orgContextsDir, manifest, policyBody, resolvedDirectives, orgProfiles }) {
+    const profiles = orgProfiles ?? [];
     const orgBodies = {};
     const mandatoryRuleIds = [];
-    for (const profile of manifest.organization_profiles) {
+    for (const profile of profiles) {
         const relativePath = ORGANIZATION_PROFILE_ALLOWLIST[profile];
         if (!relativePath)
             throw new Error(`Organization profile ${profile} is not allowlisted`);
@@ -113,9 +114,18 @@ export function compileOcrRules({ orgContextsDir, manifest, policyBody }) {
         }
     }
     rules.push(buildBaseRule({ orgRulesBlk, conventionsPaths: allRequiredPaths, requiredContextPaths: [], policyDimensions }));
-    const include = manifest.profile === "backend"
-        ? ["internal/**/*.go", "cmd/**/*.go", "pkg/**/*.go"]
-        : ["src/**/*.ts", "src/**/*.tsx", "src/**/*.js"];
+    if (resolvedDirectives && resolvedDirectives.length > 0) {
+        rules.splice(rules.length - 1, 0, ...resolvedDirectives);
+    }
+    const isBackend = profiles.some((p) => p.startsWith("backend"));
+    const isFrontend = profiles.some((p) => p.startsWith("frontend"));
+    const include = [];
+    if (isBackend)
+        include.push("internal/**/*.go", "cmd/**/*.go", "pkg/**/*.go");
+    if (isFrontend)
+        include.push("src/**/*.ts", "src/**/*.tsx", "src/**/*.js");
+    if (include.length === 0)
+        include.push("internal/**/*.go", "cmd/**/*.go", "pkg/**/*.go");
     const exclude = [...(manifest.excluded_paths ?? []), "**/*_test.go", "_test.go"];
     return { include, exclude, rules };
 }
