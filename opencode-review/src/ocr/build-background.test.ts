@@ -1,6 +1,50 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildBackground } from "./build-background.js";
+import { buildBackground, allocateBudget } from "./build-background.js";
+
+interface Thread {
+  path: string;
+  line: number;
+  is_resolved: boolean;
+  is_outdated: boolean;
+  comment_count: number;
+  human_bodies: string[];
+  latest_author?: string;
+  latest_body_excerpt?: string;
+}
+
+describe("allocateBudget", () => {
+  it("returns empty array for empty threads", () => {
+    assert.deepStrictEqual(allocateBudget([], 100), []);
+  });
+
+  it("distributes budget equally across threads", () => {
+    const threads = [
+      { path: "a.go", line: 1, human_bodies: ["short"] },
+      { path: "b.go", line: 2, human_bodies: ["short"] },
+    ];
+    const result = allocateBudget(threads, 200);
+    assert.equal(result.length, 2);
+    assert.ok(Math.abs(result[0] - 100) <= 1);
+    assert.ok(Math.abs(result[1] - 100) <= 1);
+  });
+
+  it("returns zero allocations when budget is zero", () => {
+    const threads = [
+      { path: "a.go", line: 1, human_bodies: ["content"] },
+    ];
+    const result = allocateBudget(threads, 0);
+    assert.equal(result[0], 0);
+  });
+
+  it("handles single thread getting full budget", () => {
+    const threads = [
+      { path: "a.go", line: 1, human_bodies: ["content"] },
+    ];
+    const result = allocateBudget(threads, 500);
+    assert.equal(result[0], 500);
+  });
+});
 
 describe("buildBackground", () => {
   it("returns placeholder for empty threads", () => {
@@ -13,38 +57,55 @@ describe("buildBackground", () => {
     assert.equal(buildBackground(undefined), "No prior review threads on this PR.");
   });
 
-  it("renders a directive and one line per thread", () => {
-    const threads = [
-      { path: "internal/foo.go", line: 42, latest_author: "alice", latest_body_excerpt: "please rename this" },
+  it("emits resolved thread with reasoning digest", () => {
+    const threads: Thread[] = [
+      {
+        path: "internal/foo.go", line: 42, is_resolved: true, is_outdated: false,
+        comment_count: 2, human_bodies: ["This looks good.", "Agreed, resolving."],
+        latest_author: "alice", latest_body_excerpt: "Agreed, resolving.",
+      },
     ];
     const result = buildBackground(threads);
     assert.match(result, /Do NOT re-flag/);
-    assert.match(result, /internal\/foo\.go:42/);
-    assert.match(result, /@alice/);
-    assert.match(result, /please rename this/);
+    assert.match(result, /internal\/foo\.go:42 \(resolved, 2 comments\)/);
+    assert.match(result, /This looks good/);
+    assert.match(result, /Agreed, resolving/);
   });
 
-  it("caps at 50 threads", () => {
-    const threads = Array.from({ length: 60 }, (_, i) => ({
-      path: `internal/file${i}.go`,
-      line: i,
-      latest_author: "user",
-      latest_body_excerpt: "note",
-    }));
-    const result = buildBackground(threads);
-    const lines = result.split("\n");
-    const itemLines = lines.filter((l) => l.startsWith("- "));
-    assert.ok(itemLines.length <= 50);
-  });
-
-  it("trims excerpts to ~200 chars", () => {
-    const longExcerpt = "x".repeat(500);
-    const threads = [
-      { path: "internal/foo.go", line: 1, latest_author: "user", latest_body_excerpt: longExcerpt },
+  it("emits unresolved thread without body text", () => {
+    const threads: Thread[] = [
+      {
+        path: "internal/bar.go", line: 10, is_resolved: false, is_outdated: false,
+        comment_count: 1, human_bodies: ["Please fix this."],
+      },
     ];
     const result = buildBackground(threads);
-    assert.ok(!result.includes(longExcerpt), "long excerpt should be trimmed");
-    const match = result.match(/x{100,}/);
-    assert.ok(match && match[0].length <= 210, "excerpt should be trimmed");
+    assert.match(result, /internal\/bar\.go:10 \(unresolved\)/);
+    assert.ok(!result.includes("Please fix this"), "unresolved thread should not include body text");
+  });
+
+  it("total output is under 8192 bytes", () => {
+    const threads: Thread[] = Array.from({ length: 100 }, (_, i) => ({
+      path: `internal/file${i}.go`,
+      line: i,
+      is_resolved: i % 2 === 0,
+      is_outdated: false,
+      comment_count: 3,
+      human_bodies: ["x".repeat(500)],
+    }));
+    const result = buildBackground(threads);
+    const byteLength = Buffer.byteLength(result);
+    assert.ok(byteLength < 8192, `output ${byteLength} bytes exceeds 8192 limit`);
+  });
+
+  it("truncates over-budget thread digests with marker", () => {
+    const threads: Thread[] = [
+      {
+        path: "internal/foo.go", line: 1, is_resolved: true, is_outdated: false,
+        comment_count: 1, human_bodies: ["x".repeat(10000)],
+      },
+    ];
+    const result = buildBackground(threads);
+    assert.match(result, /\u2026\[truncated\]/);
   });
 });
