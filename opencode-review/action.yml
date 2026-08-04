@@ -847,6 +847,7 @@ runs:
         CONTEXT_VERDICT: ${{ steps.context.outputs.verdict }}
         SERENA_STATUS: ${{ steps.serena.outputs.status }}
         MODE: ${{ steps.pr-info.outputs.mode }}
+        ENGINE: ${{ inputs.ocr == 'true' && 'ocr' || 'agent' }}
       run: |
         mkdir -p "$RUNNER_TEMP/telemetry"
         node -e "
@@ -854,6 +855,7 @@ runs:
           const row = {
             pr: Number(process.env.PR_NUMBER),
             run_id: process.env.RUN_ID,
+            engine: process.env.ENGINE || 'agent',
             mode: process.env.MODE || null,
             base_sha: process.env.BASE_SHA || null,
             head_sha: process.env.HEAD_SHA || null,
