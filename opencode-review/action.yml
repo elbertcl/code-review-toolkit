@@ -386,6 +386,7 @@ runs:
     - name: Set up Serena MCP
       id: serena
       if: |
+        inputs.ocr != 'true' &&
         inputs.serena == 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -424,6 +425,7 @@ runs:
     # ── Prepare workspace-local OpenCode instruction files ───────────────────
     - name: Prepare OpenCode instruction files
       if: |
+        inputs.ocr != 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -509,6 +511,7 @@ runs:
     # ── Guard: review mode must stay comment-only / clean ────────────────────
     - name: Ensure review workspace is clean before OpenCode runs
       if: |
+        inputs.ocr != 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -531,7 +534,7 @@ runs:
     # at startup. For workflow_dispatch, inject it so the review posts to the
     # correct PR. Issue_comment triggers already have the context — skip.
     - name: Inject PR context for opencode
-      if: inputs.issue_number != ''
+      if: inputs.ocr != 'true' && inputs.issue_number != ''
       shell: bash
       run: |
         jq '. + { issue: { number: ($issueNum|tonumber), pull_request: {} } }' \
@@ -543,6 +546,7 @@ runs:
     # ── Full review (first-time) ─────────────────────────────────────────────
     - name: Run full review
       if: |
+        inputs.ocr != 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         (steps.pr-info.outputs.mode == 'review' || steps.preflight.outputs.mode_override == 'review') &&
         steps.loop_guard.outputs.skip != 'true'
@@ -568,6 +572,7 @@ runs:
     # ── Re-review (subsequent /review after prior feedback) ─────────────────
     - name: Run re-review
       if: |
+        inputs.ocr != 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.pr-info.outputs.mode == 're-review' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -597,6 +602,7 @@ runs:
     - name: Verify review comment is posted
       id: review-comment-id
       if: |
+        inputs.ocr != 'true' &&
         steps.pr-info.outputs.skip != 'true' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
