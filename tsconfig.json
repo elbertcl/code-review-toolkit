@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2022",
+    "rootDir": "opencode-review/src",
+    "outDir": "opencode-review/dist",
+    "sourceMap": true,
+    "declaration": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  },
+  "include": ["opencode-review/src/**/*.ts"]
+}
