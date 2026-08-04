@@ -179,6 +179,15 @@ export function selectConditionalContext(manifest, changedFiles) {
   ));
 }
 
+export function selectDirectives(manifest, changedFiles) {
+  const directives = manifest.review_directives ?? [];
+  return directives.flatMap((entry) => (
+    changedFiles.some((changedFile) => entry.when_changed.some((glob) => globMatches(glob, changedFile)))
+      ? [{ when_changed: entry.when_changed, directive: entry.directive }]
+      : []
+  ));
+}
+
 export function classifyContext(manifest, workspace, changedFiles) {
   validateManifest(manifest);
   const requiredEntries = [...manifest.required_context, ...selectConditionalContext(manifest, changedFiles)];

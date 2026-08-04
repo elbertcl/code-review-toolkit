@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { validateManifest } from "./review-manifest.mjs";
+import { validateManifest, selectDirectives } from "./review-manifest.mjs";
 
 const BASE_MANIFEST = {
   schema_version: 1,
@@ -105,6 +105,57 @@ describe("validateManifest schema_version", () => {
       };
       assert.throws(() => validateManifest(manifest), /review_directives.directive must be a non-empty string/);
     });
+  });
+});
+
+describe("selectDirectives", () => {
+  it("returns [] when manifest has no review_directives", () => {
+    const manifest = { ...BASE_MANIFEST, schema_version: 2 };
+    const result = selectDirectives(manifest, ["internal/db/foo.go"]);
+    assert.deepStrictEqual(result, []);
+  });
+
+  it("returns matching directives by changed files", () => {
+    const manifest = {
+      ...BASE_MANIFEST,
+      schema_version: 2,
+      review_directives: [
+        { when_changed: ["internal/**/db/**"], directive: "do not refactor DB" },
+        { when_changed: ["internal/**/handler/**"], directive: "no business logic in handlers" },
+      ],
+    };
+    const result = selectDirectives(manifest, ["internal/db/query.go"]);
+    assert.deepStrictEqual(result, [
+      { when_changed: ["internal/**/db/**"], directive: "do not refactor DB" },
+    ]);
+  });
+
+  it("returns multiple matches, order preserved", () => {
+    const manifest = {
+      ...BASE_MANIFEST,
+      schema_version: 2,
+      review_directives: [
+        { when_changed: ["internal/**/db/**"], directive: "first" },
+        { when_changed: ["internal/**/db/**", "pkg/**"], directive: "second" },
+      ],
+    };
+    const result = selectDirectives(manifest, ["internal/db/query.go"]);
+    assert.deepStrictEqual(result, [
+      { when_changed: ["internal/**/db/**"], directive: "first" },
+      { when_changed: ["internal/**/db/**", "pkg/**"], directive: "second" },
+    ]);
+  });
+
+  it("returns [] when no glob matches", () => {
+    const manifest = {
+      ...BASE_MANIFEST,
+      schema_version: 2,
+      review_directives: [
+        { when_changed: ["internal/**/db/**"], directive: "do not refactor DB" },
+      ],
+    };
+    const result = selectDirectives(manifest, ["README.md"]);
+    assert.deepStrictEqual(result, []);
   });
 });
 
