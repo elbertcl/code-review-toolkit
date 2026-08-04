@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -40,6 +41,19 @@ export function readAtRef(workspace, trustedRef, declaredPath) {
   } catch (error) {
     throw new Error(`${declaredPath} cannot be read at trusted ref: ${error.message}`);
   }
+}
+
+export function readOrgContext(orgContextsDir, relativePath) {
+  assertSafeGitPath(relativePath);
+  const absolute = path.resolve(orgContextsDir, relativePath);
+  const rootReal = path.resolve(orgContextsDir);
+  if (absolute !== rootReal && !absolute.startsWith(`${rootReal}${path.sep}`)) {
+    throw new Error(`${relativePath} resolves outside org contexts dir`);
+  }
+  const stat = lstatSync(absolute);
+  if (stat.isSymbolicLink()) throw new Error(`${relativePath} is a symlink`);
+  if (!stat.isFile()) throw new Error(`${relativePath} is not a regular file`);
+  return readFileSync(absolute, "utf8");
 }
 
 function parseMandatoryRuleIds(content, sourcePath) {
@@ -97,7 +111,7 @@ function assertTrustedCommit(workspace, trustedRef) {
   }
 }
 
-export async function compileReviewContext({ workspace, trustedRef, changedFiles = [], orgContextsPrefix, outputPath, maxBytes = 500_000, openThreadsPath }) {
+export async function compileReviewContext({ workspace, trustedRef, changedFiles = [], orgContextsDir, outputPath, maxBytes = 500_000, openThreadsPath }) {
   assertTrustedCommit(workspace, trustedRef);
   const manifestText = readAtRef(workspace, trustedRef, MANIFEST_PATH);
   const manifest = validateManifest(parseManifest(manifestText));
@@ -113,11 +127,10 @@ export async function compileReviewContext({ workspace, trustedRef, changedFiles
   for (const profile of manifest.organization_profiles) {
     const relativePath = ORGANIZATION_PROFILE_ALLOWLIST[profile];
     if (!relativePath) throw new Error(`Organization profile ${profile} is not allowlisted`);
-    // Read org profiles from the trusted ref (same trust model as policy_path
-    // and required/optional context) so a PR branch cannot redefine its own
-    // mandatory organization rules. See RULE-RVW-01.
-    const declaredPath = `${orgContextsPrefix}/${relativePath}`;
-    const content = readAtRef(workspace, trustedRef, declaredPath);
+    // Org contexts ship inside the action checkout, not the consuming repo.
+    // Read them from the action filesystem so a PR branch cannot supply or
+    // redefine its own mandatory organization rules. See RULE-RVW-01.
+    const content = readOrgContext(orgContextsDir, relativePath);
     mandatoryRuleIds.push(...parseMandatoryRuleIds(content, relativePath));
     addSource(relativePath, content);
   }
