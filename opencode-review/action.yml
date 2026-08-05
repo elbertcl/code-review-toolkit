@@ -605,6 +605,9 @@ runs:
         ocr config set llm.auth_token "${{ inputs.ocr_llm_token }}"
         ocr config set llm.protocol openai
         ocr config set llm.model deepseek-v4-pro
+        echo "=== Diagnostic: ocr path ==="
+        which ocr || echo "ocr not found in PATH"
+        ocr --help 2>&1 | head -3 || true
         echo "=== Diagnostic: input sizes ==="
         wc -c "$RUNNER_TEMP/ocr-rule.json" /tmp/background.md || true
         echo "=== Diagnostic: LLM endpoint test ==="
@@ -612,6 +615,7 @@ runs:
           "${{ inputs.ocr_llm_url }}/models" \
           -H "Authorization: Bearer ${{ inputs.ocr_llm_token }}" || echo "curl failed"
         echo "=== Running OCR review ==="
+        set +e
         ocr review --from "$BASE_SHA" --to "$HEAD_SHA" \
           --rule "$RUNNER_TEMP/ocr-rule.json" \
           --background-file /tmp/background.md \
