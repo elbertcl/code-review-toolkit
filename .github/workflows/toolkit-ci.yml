@@ -5,6 +5,8 @@ on:
     paths:
       - "opencode-review/src/**"
       - "opencode-review/dist/**"
+      - "opencode-review/action.yml"
+      - "opencode-review/scripts/**"
       - "package.json"
       - "package-lock.json"
       - "tsconfig.json"
@@ -14,6 +16,8 @@ on:
     paths:
       - "opencode-review/src/**"
       - "opencode-review/dist/**"
+      - "opencode-review/action.yml"
+      - "opencode-review/scripts/**"
       - "package.json"
       - "package-lock.json"
       - "tsconfig.json"
@@ -43,3 +47,6 @@ jobs:
 
       - name: Check dist drift
         run: npm run check-dist
+
+      - name: Check issue_number render (JS syntax guard)
+        run: bash opencode-review/scripts/check-issue-number-render.sh
