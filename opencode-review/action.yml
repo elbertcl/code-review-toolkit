@@ -84,7 +84,7 @@ inputs:
       Required for OCR review. Valid values - backend/security, backend/sre,
       frontend/security, frontend/sre.
     required: false
-    default: ""
+    default: "backend/security,backend/sre"
 
 runs:
   using: composite
