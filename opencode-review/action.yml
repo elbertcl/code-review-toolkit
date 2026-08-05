@@ -606,7 +606,7 @@ runs:
         ocr config set llm.url "${{ inputs.ocr_llm_url }}"
         ocr config set llm.auth_token "${{ inputs.ocr_llm_token }}"
         ocr config set llm.protocol openai
-        ocr config set llm.model deepseek-v4-pro
+        ocr config set llm.model deepseek/deepseek-v4-pro
         echo "=== Running OCR review ==="
         ocr review --from "$BASE_SHA" --to "$HEAD_SHA" \
           --rule "$RUNNER_TEMP/ocr-rule.json" \
