@@ -73,10 +73,10 @@ remain valid and do not need upgrading. Set `"schema_version": 2` in
 `REVIEW.md` to use directives. The field is optional — absent means no
 directive rules.
 
-### OCR engine (`ocr: true`)
+### OCR engine
 
-When `ocr: true`, the action runs the OCR engine **instead of** the OpenCode
-agent. OCR receives manifest-derived rules with full org+policy+per-domain
+OCR runs **unconditionally** since v4.3.1 — it is the sole review path and no longer
+gated on a boolean toggle. OCR receives manifest-derived rules with full org+policy+per-domain
 parity — the same `REVIEW.md` that drives the agent's `review_context.md` also
 generates OCR's `rule.json`. The action:
 
@@ -93,7 +93,6 @@ Consumer setup is a thin workflow that only passes the flag:
   with:
     mentions: /review-ocr
     use_github_token: true
-    ocr: true
     ocr_llm_url: ${{ secrets.OCR_POC_LLM_URL }}
     ocr_llm_token: ${{ secrets.OCR_POC_LLM_TOKEN }}
 ```
@@ -126,7 +125,6 @@ Consuming workflows must pass the organization profiles as a comma-separated inp
 
 ```yaml
 with:
-  ocr: true
   org_profiles: backend/security,backend/sre
 ```
 
@@ -149,8 +147,9 @@ new repos.
 
 ### Thin POC lanes (deprecated — OCR is the sole engine in v4.3+)
 
-The OCR engine is the sole review path since v4.3.0. All review trigger workflows funnel
-into one OCR-based lane. The agent lane (`/review`, `/review-serena`) has been removed.
+The OCR engine is the sole review path since v4.3.0; the `ocr` toggle was removed in v4.3.1
+so OCR runs unconditionally. All review trigger workflows funnel into one OCR-based lane.
+The agent lane (`/review`, `/review-serena`) has been removed.
 
 ## Development (TypeScript, v4.2+)
 
