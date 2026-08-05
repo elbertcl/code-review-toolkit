@@ -133,7 +133,8 @@ runs:
         script: |
           const owner = context.repo.owner;
           const repo = context.repo.repo;
-          const issueNumber = ${{ inputs.issue_number }} || context.payload.issue.number;
+          const issueNumberInput = '${{ inputs.issue_number }}';
+          const issueNumber = (issueNumberInput ? Number(issueNumberInput) : null) || context.payload.issue.number;
           const commentId = context.payload.comment ? context.payload.comment.id : null;
           const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
 
@@ -165,7 +166,7 @@ runs:
             c.user.login === 'github-actions[bot]' &&
             c.body.includes(verdictMarker)
           );
-          const mode = ${{ inputs.issue_number }} ? 'review' : (priorVerdicts.length === 0 ? 'review' : 're-review');
+          const mode = issueNumberInput ? 'review' : (priorVerdicts.length === 0 ? 'review' : 're-review');
           core.info(`==> Mode: ${mode} (${priorVerdicts.length} prior verdict(s))`);
 
           if (commentId) {
@@ -177,7 +178,7 @@ runs:
             });
           }
 
-          const pocMarker = ${{ inputs.issue_number }} ? ' [Serena POC]' : '';
+          const pocMarker = issueNumberInput ? ' [Serena POC]' : '';
           const emoji = mode === 'review' ? '🔍' : '🔄';
           const label = mode === 'review' ? 'OpenCode review started' : 'OpenCode re-review started';
           await github.rest.issues.createComment({
