@@ -5,7 +5,8 @@ interface Finding {
   start_line?: number | null;
   severity?: string;
   category?: string;
-  message: string;
+  message?: string;
+  content?: string;
 }
 
 interface Anchor {
@@ -66,7 +67,7 @@ export function computeFindings({ findings, anchors }: ComputeFindingsInput): Co
     return {
       path: finding.path,
       line,
-      body: `**[OCR POC][${sevCat}]** ${finding.message}`,
+      body: `**[OCR POC][${sevCat}]** ${finding.message || finding.content || ""}`,
     };
   });
 
@@ -100,8 +101,8 @@ export function buildVerdictComment({ findings, headSha, verdictMarker, headMark
     severity: f.severity ?? "INFO",
     path: f.path,
     line: f.line ?? f.start_line ?? f.end_line ?? 0,
-    title: f.message.split(".")[0] || f.message,
-    body: f.message,
+    title: (f.message || f.content || "").split(".")[0] || f.message || f.content || "",
+    body: f.message || f.content || "",
     suggested_fix: "",
   }));
 
