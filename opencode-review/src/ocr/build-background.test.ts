@@ -120,6 +120,7 @@ describe("buildBackground", () => {
     const result = buildBackground(threads, serenaContext);
     assert.ok(result.startsWith(serenaContext), "serena context should come first");
     assert.match(result, /ProcessSpendingSellerEvents/);
+    assert.match(result, /referenced by:/, "serena pointer content must survive into background");
     assert.match(result, /This was discussed and resolved/);
     assert.ok(Buffer.byteLength(result) <= 2100, "total should be near or under 2000");
   });
