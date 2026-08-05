@@ -67,7 +67,7 @@ export function computeFindings({ findings, anchors }: ComputeFindingsInput): Co
     return {
       path: finding.path,
       line,
-      body: `**[OCR POC][${sevCat}]** ${finding.message || finding.content || ""}`,
+      body: `**[${sevCat}]** ${finding.message || finding.content || ""}`,
     };
   });
 
@@ -87,9 +87,11 @@ interface BuildVerdictInput {
   headSha: string;
   verdictMarker: string;
   headMarker: string;
+  serenaStatus?: string;
+  manifestFallbackReason?: string;
 }
 
-export function buildVerdictComment({ findings, headSha, verdictMarker, headMarker }: BuildVerdictInput): string {
+export function buildVerdictComment({ findings, headSha, verdictMarker, headMarker, serenaStatus, manifestFallbackReason }: BuildVerdictInput): string {
   const criticalCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "CRITICAL").length;
   const highCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "HIGH").length;
   const mediumCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "MEDIUM").length;
@@ -106,7 +108,14 @@ export function buildVerdictComment({ findings, headSha, verdictMarker, headMark
     suggested_fix: "",
   }));
 
-  return `## OCR Review Verdict
+  const serenaLabel = serenaStatus === "available" ? "available" : "not available";
+  const reviewMdLabel = manifestFallbackReason ? `not loaded (${manifestFallbackReason})` : "loaded";
+
+  return `## Review Verdict
+
+**Context:**
+- Serena: ${serenaLabel}
+- REVIEW.md: ${reviewMdLabel}
 
 **Verdict: ${verdict}** — ${total} finding${total !== 1 ? "s" : ""} (${criticalCount} CRITICAL, ${highCount} HIGH, ${mediumCount} MEDIUM, ${lowCount} LOW)
 

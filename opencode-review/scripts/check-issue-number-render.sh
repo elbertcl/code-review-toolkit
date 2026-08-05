@@ -6,8 +6,7 @@ snippet() {
 const issueNumberInput = '${1}';
 const issueNumber = (issueNumberInput ? Number(issueNumberInput) : null) || 0;
 const mode = issueNumberInput ? 'review' : 'default';
-const pocMarker = issueNumberInput ? ' [Serena POC]' : '';
-void [issueNumber, mode, pocMarker];
+void [issueNumber, mode];
 JS
 }
 for val in "" "123"; do

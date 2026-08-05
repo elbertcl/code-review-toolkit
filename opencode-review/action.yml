@@ -149,7 +149,7 @@ runs:
               owner,
               repo,
               issue_number: issueNumber,
-              body: '**OpenCode review skipped:** PR is still a draft.'
+              body: '**Review skipped:** PR is still a draft.'
             });
             core.setOutput('skip', 'true');
             return;
@@ -178,12 +178,11 @@ runs:
             });
           }
 
-          const pocMarker = issueNumberInput ? ' [Serena POC]' : '';
           const emoji = mode === 'review' ? '🔍' : '🔄';
-          const label = mode === 'review' ? 'OpenCode review started' : 'OpenCode re-review started';
+          const label = mode === 'review' ? 'AI review started' : 'AI re-review started';
           await github.rest.issues.createComment({
             owner, repo, issue_number: issueNumber,
-            body: `${emoji} **${label}${pocMarker}** for commit \`${pr.head.sha.slice(0, 7)}\`. [View workflow run](${runUrl})`
+            body: `${emoji} **${label}** for commit \`${pr.head.sha.slice(0, 7)}\`. [View workflow run](${runUrl})`
           });
 
           core.setOutput('skip',       'false');
@@ -245,7 +244,7 @@ runs:
 
             await github.rest.issues.createComment({
               owner, repo, issue_number: prNum,
-              body: '**OpenCode re-review skipped:** No prior inline review comments found from the last OpenCode review. This PR has not been fully reviewed yet. Triggering a fresh review instead is recommended — delete the existing `PR Verdict:` comment and comment `/review` again.'
+              body: '**Re-review skipped:** No prior inline review comments found from the last review. This PR has not been fully reviewed yet. Triggering a fresh review instead is recommended — delete the existing `PR Verdict:` comment and comment `/review` again.'
             });
             core.setOutput('skip', 'true');
             return;
@@ -265,7 +264,7 @@ runs:
           if (verdictForCurrentHead) {
             await github.rest.issues.createComment({
               owner, repo, issue_number: prNum,
-              body: `**OpenCode re-review skipped:** No changes since last review (head is still \`${currentHeadSha.slice(0, 7)}\`). Push new commits or force-push a rebase to trigger a re-review.`
+              body: `**Re-review skipped:** No changes since last review (head is still \`${currentHeadSha.slice(0, 7)}\`).`
             });
             core.setOutput('skip', 'true');
             return;
@@ -319,7 +318,7 @@ runs:
         if [ "${EXISTING}" -gt "0" ]; then
           echo "Loop guard: complete review already exists for commit ${HEAD_SHA} — skipping"
           gh pr comment "${PR_NUMBER}" \
-            --body "**OpenCode review skipped:** Commit \`${HEAD_SHA:0:7}\` was already fully reviewed. Push a new commit to trigger a re-review."
+            --body "**Review skipped:** Commit \`${HEAD_SHA:0:7}\` was already fully reviewed. Push a new commit to trigger a re-review."
           echo "skip=true" >> $GITHUB_OUTPUT
         else
           echo "skip=false" >> $GITHUB_OUTPUT
@@ -348,7 +347,7 @@ runs:
         echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
         echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
-    # ── Serena setup (fail-open, used by OCR fetcher) ──────────────────────
+    # ── Serena setup (fail-open, used by review fetcher) ──────────────────────
     - name: Set up Serena
       id: serena
       if: |
@@ -369,8 +368,8 @@ runs:
           echo "SERENA_HOME=$SERENA_HOME" >> "$GITHUB_ENV"
         fi
 
-    # ── Run Serena fetcher for OCR context ──────────────────────────────────
-    - name: Fetch Serena context (OCR)
+    # ── Run Serena fetcher for review context ──────────────────────────────────
+    - name: Fetch Serena context
       if: |
         steps.serena.outputs.status == 'available' &&
         steps.pr-info.outputs.skip == 'false' &&
@@ -385,8 +384,8 @@ runs:
           "20" \
           /tmp/serena-context.md || true
 
-    # ── OCR engine ──────────────────────────────────────────────────────────
-    - name: Validate OCR secrets
+    # ── Review engine ──────────────────────────────────────────────────────────
+    - name: Validate review secrets
       id: ocr-secrets
       if: |
         steps.pr-info.outputs.skip == 'false' &&
@@ -398,14 +397,14 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         if [ -z "${{ inputs.ocr_llm_url }}" ] || [ -z "${{ inputs.ocr_llm_token }}" ]; then
-          echo "::error::OCR_LLM_URL and OCR_LLM_TOKEN secrets are required for OCR review."
+          echo "::error::LLM endpoint URL and auth token are required."
           gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
-            --body "**OCR review aborted:** missing required OCR secrets (LLM endpoint or token)."
+            --body "**Review aborted:** missing LLM configuration."
           exit 1
         fi
 
-    - name: Fetch open PR review threads (OCR)
+    - name: Fetch open PR review threads
       id: ocr-threads
       if: |
         steps.pr-info.outputs.skip == 'false' &&
@@ -499,7 +498,7 @@ runs:
           fs.writeFileSync('/tmp/open-thread-anchors.json', JSON.stringify(anchors));
           core.info(`Collected ${threads.length} review threads via GraphQL (${anchors.filter(a => a.is_resolved).length} resolved, ${anchors.filter(a => a.is_outdated).length} outdated)`);
 
-    - name: Remap OCR anchors (resolved + current lines)
+    - name: Remap review anchors (resolved + current lines)
       if: |
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -508,7 +507,7 @@ runs:
       shell: bash
       run: node "${{ github.action_path }}/dist/ocr/remap-anchors.js" /tmp/open-thread-anchors.json /tmp/remapped-anchors.json
 
-    - name: Build resolved-thread directives (OCR)
+    - name: Build resolved-thread directives
       if: |
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -517,7 +516,7 @@ runs:
       shell: bash
       run: node "${{ github.action_path }}/dist/ocr/resolved-directives.js" /tmp/open-threads.json /tmp/resolved-directives.json
 
-    - name: Build OCR background
+    - name: Build review background
       if: |
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -526,7 +525,7 @@ runs:
       shell: bash
       run: node "${{ github.action_path }}/dist/ocr/build-background.js" /tmp/open-threads.json /tmp/serena-context.md > /tmp/background.md
 
-    - name: Compile OCR rules
+    - name: Compile review rules
       if: |
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -535,13 +534,14 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        SERENA_STATUS: ${{ steps.serena.outputs.status }}
       run: |
         ORG_PROFILES_INPUT="${{ inputs.org_profiles }}"
         if [ -z "${ORG_PROFILES_INPUT}" ]; then
-          echo "::error::org_profiles is required for OCR review. Valid values: backend/security, backend/sre, frontend/security, frontend/sre."
+          echo "::error::org_profiles is required. Valid values: backend/security, backend/sre, frontend/security, frontend/sre."
           gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
-            --body "**OCR review aborted:** missing required org_profiles input."
+            --body "**Review aborted:** missing required org_profiles input."
           exit 1
         fi
         node --input-type=module -e "
@@ -584,12 +584,13 @@ runs:
         "
         if [ -f /tmp/manifest-fallback-reason ]; then
           REASON="$(cat /tmp/manifest-fallback-reason)"
+          SERENA="${SERENA_STATUS:-unavailable}"
           gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
-            --body "⚠️ **OCR review ran with ORG-DEFAULT rules only.** Your repo \`REVIEW.md\` was not applied: ${REASON}. Repo-specific rules (conditional invariants, testspecs, review_directives) did **not** apply this run. Fix \`REVIEW.md\` to restore them (see the v4.3 migration)."
+            --body "⚠️ **Review ran with ORG-DEFAULT rules only.** Serena: ${SERENA}. Your repo \`REVIEW.md\` was not applied: ${REASON}. Repo-specific rules (conditional invariants, testspecs, review_directives) did **not** apply this run. Fix \`REVIEW.md\` to restore them (see the v4.3 migration)."
         fi
 
-    - name: Install and run OCR
+    - name: Install and run review CLI
       if: |
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -607,13 +608,13 @@ runs:
         ocr config set llm.auth_token "${{ inputs.ocr_llm_token }}"
         ocr config set llm.protocol openai
         ocr config set llm.model deepseek/deepseek-v4-pro
-        echo "=== Running OCR review ==="
+        echo "=== Running review ==="
         ocr review --from "$BASE_SHA" --to "$HEAD_SHA" \
           --rule "$RUNNER_TEMP/ocr-rule.json" \
           --background-file /tmp/background.md \
           --format json > /tmp/findings.json
 
-    - name: Post OCR findings
+    - name: Post review findings
       if: |
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -623,6 +624,7 @@ runs:
       env:
         HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
         PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+        SERENA_STATUS: ${{ steps.serena.outputs.status }}
       with:
         github-token: ${{ github.token }}
         script: |
@@ -658,11 +660,19 @@ runs:
             });
           }
 
+          let serenaStatus = process.env.SERENA_STATUS || 'unavailable';
+          let manifestFallbackReason = '';
+          if (fs.existsSync('/tmp/manifest-fallback-reason')) {
+            manifestFallbackReason = fs.readFileSync('/tmp/manifest-fallback-reason', 'utf8').trim();
+          }
+
           const verdictBody = buildVerdictComment({
             findings: result.kept,
             headSha,
             verdictMarker: '\${{ inputs.verdict_marker }}',
             headMarker: '\${{ inputs.head_marker }}',
+            serenaStatus,
+            manifestFallbackReason,
           });
           await github.rest.issues.createComment({
             owner: context.repo.owner,
@@ -673,7 +683,7 @@ runs:
 
           fs.writeFileSync('/tmp/ocr-result.json', JSON.stringify({ kept: result.kept.length, dropped: result.dropped.length, resolved: result.resolved.length }));
 
-    - name: Append OCR measurement
+    - name: Append measurement
       if: |
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -756,7 +766,7 @@ runs:
         for i in $(seq 3); do
           if gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
-            --body "**OpenCode review failed unexpectedly.** Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."; then
+            --body "**Review failed unexpectedly.** Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."; then
             echo "Failure comment posted"
             break
           fi

@@ -21,11 +21,11 @@ describe("computeFindings", () => {
         assert.equal(result.dropped.length, 1);
         assert.equal(result.dropped[0].message, "magic number");
     });
-    it("formats kept findings as OCR POC comments", () => {
+    it("formats kept findings as severity/category comments", () => {
         const result = computeFindings({ findings: sampleFindings, anchors: [] });
         assert.equal(result.comments.length, 3);
         const firstComment = result.comments[0];
-        assert.match(firstComment.body, /\[OCR POC\]/);
+        assert.match(firstComment.body, /\[High\/Performance\]/);
         assert.match(firstComment.body, /\[High\/Performance\]/);
         assert.match(firstComment.body, /N\+1 query/);
         assert.equal(firstComment.path, "internal/a.go");
