@@ -533,6 +533,8 @@ runs:
         steps.loop_guard.outputs.skip != 'true' &&
         steps.security.outputs.skip != 'true'
       shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
         ORG_PROFILES_INPUT="${{ inputs.org_profiles }}"
         if [ -z "${ORG_PROFILES_INPUT}" ]; then
