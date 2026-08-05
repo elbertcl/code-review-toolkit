@@ -348,6 +348,43 @@ runs:
         echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
         echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
+    # ── Serena setup (fail-open, used by OCR fetcher) ──────────────────────
+    - name: Set up Serena
+      id: serena
+      if: |
+        inputs.serena == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      run: |
+        SERENA_HOME="$RUNNER_TEMP/serena"
+        STATUS_JSON="$RUNNER_TEMP/serena-status.json"
+        bash "${{ github.action_path }}/serena/install-and-probe.sh" \
+          "${{ inputs.serena_sha }}" "$SERENA_HOME" "$STATUS_JSON" || true
+        STATUS=$(node -pe "try { JSON.parse(require('fs').readFileSync('$STATUS_JSON','utf8')).status } catch { 'unavailable' }")
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        if [ "$STATUS" = "available" ]; then
+          echo "SERENA_HOME=$SERENA_HOME" >> "$GITHUB_ENV"
+        fi
+
+    # ── Run Serena fetcher for OCR context ──────────────────────────────────
+    - name: Fetch Serena context (OCR)
+      if: |
+        steps.serena.outputs.status == 'available' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      run: |
+        node "${{ github.action_path }}/dist/context/fetch-serena-context.js" \
+          "$PWD" \
+          "$RUNNER_TEMP/changed-files.json" \
+          "20" \
+          /tmp/serena-context.md || true
+
     # ── OCR engine ──────────────────────────────────────────────────────────
     - name: Validate OCR secrets
       id: ocr-secrets
@@ -646,44 +683,6 @@ runs:
           rows.push(row);
           writeFileSync(path, JSON.stringify(rows, null, 2) + '\n');
         "
-
-    # ── Serena setup (fail-open, used by OCR fetcher) ──────────────────────
-    - name: Set up Serena
-      id: serena
-      if: |
-        inputs.serena == 'true' &&
-        steps.pr-info.outputs.skip == 'false' &&
-        steps.preflight.outputs.skip != 'true' &&
-        steps.loop_guard.outputs.skip != 'true' &&
-        steps.security.outputs.skip != 'true'
-      shell: bash
-      run: |
-        SERENA_HOME="$RUNNER_TEMP/serena"
-        STATUS_JSON="$RUNNER_TEMP/serena-status.json"
-        bash "${{ github.action_path }}/serena/install-and-probe.sh" \
-          "${{ inputs.serena_sha }}" "$SERENA_HOME" "$STATUS_JSON" || true
-        STATUS=$(node -pe "try { JSON.parse(require('fs').readFileSync('$STATUS_JSON','utf8')).status } catch { 'unavailable' }")
-        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
-        if [ "$STATUS" = "available" ]; then
-          echo "SERENA_HOME=$SERENA_HOME" >> "$GITHUB_ENV"
-        fi
-
-    # ── Run Serena fetcher for OCR context ──────────────────────────────────
-    - name: Fetch Serena context (OCR)
-      if: |
-        steps.serena.outputs.status == 'available' &&
-        steps.pr-info.outputs.skip == 'false' &&
-        steps.preflight.outputs.skip != 'true' &&
-        steps.loop_guard.outputs.skip != 'true' &&
-        steps.security.outputs.skip != 'true'
-      shell: bash
-      run: |
-        node "${{ github.action_path }}/dist/context/fetch-serena-context.js" \
-          "$PWD" \
-          "$RUNNER_TEMP/changed-files.json" \
-          "20" \
-          /tmp/serena-context.md || true
-
 
     # ── Emit per-run telemetry (uploaded as an artifact) ─────────────────────
     - name: Emit review telemetry
