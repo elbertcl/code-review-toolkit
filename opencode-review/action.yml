@@ -348,6 +348,43 @@ runs:
         echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
         echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
+    # ── Serena setup (fail-open, used by OCR fetcher) ──────────────────────
+    - name: Set up Serena
+      id: serena
+      if: |
+        inputs.serena == 'true' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      run: |
+        SERENA_HOME="$RUNNER_TEMP/serena"
+        STATUS_JSON="$RUNNER_TEMP/serena-status.json"
+        bash "${{ github.action_path }}/serena/install-and-probe.sh" \
+          "${{ inputs.serena_sha }}" "$SERENA_HOME" "$STATUS_JSON" || true
+        STATUS=$(node -pe "try { JSON.parse(require('fs').readFileSync('$STATUS_JSON','utf8')).status } catch { 'unavailable' }")
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        if [ "$STATUS" = "available" ]; then
+          echo "SERENA_HOME=$SERENA_HOME" >> "$GITHUB_ENV"
+        fi
+
+    # ── Run Serena fetcher for OCR context ──────────────────────────────────
+    - name: Fetch Serena context (OCR)
+      if: |
+        steps.serena.outputs.status == 'available' &&
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      run: |
+        node "${{ github.action_path }}/dist/context/fetch-serena-context.js" \
+          "$PWD" \
+          "$RUNNER_TEMP/changed-files.json" \
+          "20" \
+          /tmp/serena-context.md || true
+
     # ── OCR engine ──────────────────────────────────────────────────────────
     - name: Validate OCR secrets
       id: ocr-secrets
@@ -509,12 +546,21 @@ runs:
           import { readFileSync, writeFileSync, existsSync } from 'node:fs';
           const repoPath = 'REVIEW.md';
           const fallbackPath = '\${{ github.action_path }}/context/defaults/REVIEW.md';
-          const manifestPath = existsSync(repoPath) ? repoPath : fallbackPath;
+          let manifest, usedFallback = false, fallbackReason = '';
+          function loadValid(p) { return validateManifest(parseManifest(readFileSync(p, 'utf8'))); }
           if (!existsSync(repoPath)) {
-            process.stderr.write('::notice::REVIEW.md not found in repo; using org-default fallback.\n');
+            usedFallback = true; fallbackReason = 'REVIEW.md not found in repo';
+            manifest = loadValid(fallbackPath);
+          } else {
+            try {
+              manifest = loadValid(repoPath);
+            } catch (e) {
+              usedFallback = true;
+              fallbackReason = 'REVIEW.md is invalid: ' + e.message;
+              manifest = loadValid(fallbackPath);
+            }
           }
-          const manifestText = readFileSync(manifestPath, 'utf8');
-          const manifest = validateManifest(parseManifest(manifestText));
+          if (usedFallback) writeFileSync('/tmp/manifest-fallback-reason', fallbackReason);
           const policyBody = existsSync(manifest.policy_path) ? readFileSync(manifest.policy_path, 'utf8') : '';
           let resolvedDirectives = [];
           if (existsSync('/tmp/resolved-directives.json')) {
@@ -533,6 +579,12 @@ runs:
           });
           writeFileSync(process.env.RUNNER_TEMP + '/ocr-rule.json', JSON.stringify(rules, null, 2) + '\n');
         "
+        if [ -f /tmp/manifest-fallback-reason ]; then
+          REASON="$(cat /tmp/manifest-fallback-reason)"
+          gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "⚠️ **OCR review ran with ORG-DEFAULT rules only.** Your repo \`REVIEW.md\` was not applied: ${REASON}. Repo-specific rules (conditional invariants, testspecs, review_directives) did **not** apply this run. Fix \`REVIEW.md\` to restore them (see the v4.3 migration)."
+        fi
 
     - name: Install and run OCR
       if: |
@@ -646,44 +698,6 @@ runs:
           rows.push(row);
           writeFileSync(path, JSON.stringify(rows, null, 2) + '\n');
         "
-
-    # ── Serena setup (fail-open, used by OCR fetcher) ──────────────────────
-    - name: Set up Serena
-      id: serena
-      if: |
-        inputs.serena == 'true' &&
-        steps.pr-info.outputs.skip == 'false' &&
-        steps.preflight.outputs.skip != 'true' &&
-        steps.loop_guard.outputs.skip != 'true' &&
-        steps.security.outputs.skip != 'true'
-      shell: bash
-      run: |
-        SERENA_HOME="$RUNNER_TEMP/serena"
-        STATUS_JSON="$RUNNER_TEMP/serena-status.json"
-        bash "${{ github.action_path }}/serena/install-and-probe.sh" \
-          "${{ inputs.serena_sha }}" "$SERENA_HOME" "$STATUS_JSON" || true
-        STATUS=$(node -pe "try { JSON.parse(require('fs').readFileSync('$STATUS_JSON','utf8')).status } catch { 'unavailable' }")
-        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
-        if [ "$STATUS" = "available" ]; then
-          echo "SERENA_HOME=$SERENA_HOME" >> "$GITHUB_ENV"
-        fi
-
-    # ── Run Serena fetcher for OCR context ──────────────────────────────────
-    - name: Fetch Serena context (OCR)
-      if: |
-        steps.serena.outputs.status == 'available' &&
-        steps.pr-info.outputs.skip == 'false' &&
-        steps.preflight.outputs.skip != 'true' &&
-        steps.loop_guard.outputs.skip != 'true' &&
-        steps.security.outputs.skip != 'true'
-      shell: bash
-      run: |
-        node "${{ github.action_path }}/dist/context/fetch-serena-context.js" \
-          "$PWD" \
-          "$RUNNER_TEMP/changed-files.json" \
-          "20" \
-          /tmp/serena-context.md || true
-
 
     # ── Emit per-run telemetry (uploaded as an artifact) ─────────────────────
     - name: Emit review telemetry
