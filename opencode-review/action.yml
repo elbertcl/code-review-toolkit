@@ -203,6 +203,8 @@ runs:
           const owner    = context.repo.owner;
           const repo     = context.repo.repo;
           const prNum    = context.payload.issue.number;
+          const verdictMarker = '${{ inputs.verdict_marker }}';
+          const headMarker = '${{ inputs.head_marker }}';
 
           // Fetch all inline comments by github-actions[bot] that match the
           // OpenCode review format ([SEVERITY] prefix).
@@ -224,8 +226,6 @@ runs:
             const { data: allIssueComments } = await github.rest.issues.listComments({
               owner, repo, issue_number: prNum, per_page: 100
             });
-            const verdictMarker = '${{ inputs.verdict_marker }}';
-            const headMarker = '${{ inputs.head_marker }}';
             const verdictComments = allIssueComments
               .filter(c => c.user.login === 'github-actions[bot]' && c.body.includes(verdictMarker) && c.body.includes(headMarker))
               .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -413,6 +413,8 @@ runs:
         steps.loop_guard.outputs.skip != 'true' &&
         steps.security.outputs.skip != 'true'
       uses: actions/github-script@v7
+      env:
+        PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
       with:
         github-token: ${{ github.token }}
         script: |
@@ -569,7 +571,6 @@ runs:
           const orgProfiles = process.env.ORG_PROFILES_INPUT ? process.env.ORG_PROFILES_INPUT.split(',').map(p => p.trim()).filter(Boolean) : [];
           const rules = compileOcrRules({
             workspace: process.cwd(),
-            trustedRef: process.env.BASE_SHA,
             changedFiles: [],
             orgContextsDir: '\${{ github.action_path }}/context/contexts',
             manifest,
@@ -616,6 +617,7 @@ runs:
       uses: actions/github-script@v7
       env:
         HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
+        PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
       with:
         github-token: ${{ github.token }}
         script: |
