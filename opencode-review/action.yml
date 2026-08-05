@@ -600,31 +600,18 @@ runs:
         BASE_SHA: ${{ steps.context.outputs.base_sha }}
         HEAD_SHA: ${{ steps.context.outputs.head_sha }}
       run: |
-        npm install -g @alibaba-group/open-code-review@1.8.1
+        npm install -g --force @alibaba-group/open-code-review@1.8.1 2>&1
+        hash -r
+        which ocr || { echo "::error::ocr CLI not found after install"; exit 1; }
         ocr config set llm.url "${{ inputs.ocr_llm_url }}"
         ocr config set llm.auth_token "${{ inputs.ocr_llm_token }}"
         ocr config set llm.protocol openai
         ocr config set llm.model deepseek-v4-pro
-        echo "=== Diagnostic: ocr path ==="
-        which ocr || echo "ocr not found in PATH"
-        ocr --help 2>&1 | head -3 || true
-        echo "=== Diagnostic: input sizes ==="
-        wc -c "$RUNNER_TEMP/ocr-rule.json" /tmp/background.md || true
-        echo "=== Diagnostic: LLM endpoint test ==="
-        curl -s -o /dev/null -w "HTTP %{http_code} in %{time_total}s\n" \
-          "${{ inputs.ocr_llm_url }}/models" \
-          -H "Authorization: Bearer ${{ inputs.ocr_llm_token }}" || echo "curl failed"
         echo "=== Running OCR review ==="
-        set +e
         ocr review --from "$BASE_SHA" --to "$HEAD_SHA" \
           --rule "$RUNNER_TEMP/ocr-rule.json" \
           --background-file /tmp/background.md \
-          --format json > /tmp/findings.json 2>/tmp/ocr-stderr.txt
-        OCR_EXIT=$?
-        echo "=== OCR stderr ==="
-        cat /tmp/ocr-stderr.txt
-        echo "=== OCR exit code: $OCR_EXIT ==="
-        exit $OCR_EXIT
+          --format json > /tmp/findings.json
 
     - name: Post OCR findings
       if: |
