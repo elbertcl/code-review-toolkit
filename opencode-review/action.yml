@@ -626,7 +626,8 @@ runs:
           const fs = require('fs');
           const prNumber = Number(process.env.PR_NUMBER);
           const headSha = process.env.HEAD_SHA || '';
-          const findings = JSON.parse(fs.readFileSync('/tmp/findings.json', 'utf8'));
+          const rawFindings = JSON.parse(fs.readFileSync('/tmp/findings.json', 'utf8'));
+          const findings = Array.isArray(rawFindings) ? rawFindings : (rawFindings.comments || []);
           let anchors = [];
           if (fs.existsSync('/tmp/remapped-anchors.json')) {
             anchors = JSON.parse(fs.readFileSync('/tmp/remapped-anchors.json', 'utf8'));
@@ -684,7 +685,8 @@ runs:
         node --input-type=module -e "
           import { buildMeasurementRow } from '\${{ github.action_path }}/dist/ocr/append-measurement.js';
           import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-          const findings = JSON.parse(readFileSync('/tmp/findings.json', 'utf8'));
+          const findingsRaw = JSON.parse(readFileSync('/tmp/findings.json', 'utf8'));
+          const findings = Array.isArray(findingsRaw) ? findingsRaw : (findingsRaw.comments || []);
           const result = JSON.parse(readFileSync('/tmp/ocr-result.json', 'utf8'));
           const row = buildMeasurementRow({
             verdict: findings.length > 0 ? 'flagged' : 'clean',
