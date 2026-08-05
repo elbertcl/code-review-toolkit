@@ -546,12 +546,21 @@ runs:
           import { readFileSync, writeFileSync, existsSync } from 'node:fs';
           const repoPath = 'REVIEW.md';
           const fallbackPath = '\${{ github.action_path }}/context/defaults/REVIEW.md';
-          const manifestPath = existsSync(repoPath) ? repoPath : fallbackPath;
+          let manifest, usedFallback = false, fallbackReason = '';
+          function loadValid(p) { return validateManifest(parseManifest(readFileSync(p, 'utf8'))); }
           if (!existsSync(repoPath)) {
-            process.stderr.write('::notice::REVIEW.md not found in repo; using org-default fallback.\n');
+            usedFallback = true; fallbackReason = 'REVIEW.md not found in repo';
+            manifest = loadValid(fallbackPath);
+          } else {
+            try {
+              manifest = loadValid(repoPath);
+            } catch (e) {
+              usedFallback = true;
+              fallbackReason = 'REVIEW.md is invalid: ' + e.message;
+              manifest = loadValid(fallbackPath);
+            }
           }
-          const manifestText = readFileSync(manifestPath, 'utf8');
-          const manifest = validateManifest(parseManifest(manifestText));
+          if (usedFallback) writeFileSync('/tmp/manifest-fallback-reason', fallbackReason);
           const policyBody = existsSync(manifest.policy_path) ? readFileSync(manifest.policy_path, 'utf8') : '';
           let resolvedDirectives = [];
           if (existsSync('/tmp/resolved-directives.json')) {
@@ -570,6 +579,12 @@ runs:
           });
           writeFileSync(process.env.RUNNER_TEMP + '/ocr-rule.json', JSON.stringify(rules, null, 2) + '\n');
         "
+        if [ -f /tmp/manifest-fallback-reason ]; then
+          REASON="$(cat /tmp/manifest-fallback-reason)"
+          gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "⚠️ **OCR review ran with ORG-DEFAULT rules only.** Your repo \`REVIEW.md\` was not applied: ${REASON}. Repo-specific rules (conditional invariants, testspecs, review_directives) did **not** apply this run. Fix \`REVIEW.md\` to restore them (see the v4.3 migration)."
+        fi
 
     - name: Install and run OCR
       if: |
