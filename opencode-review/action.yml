@@ -70,22 +70,18 @@ inputs:
     description: Abort the review when compiled context status is BLOCKED.
     required: false
     default: "true"
-  ocr:
-    description: Run the OCR engine instead of the OpenCode agent (fail-closed on missing secrets).
-    required: false
-    default: "false"
   ocr_llm_url:
-    description: OCR LLM endpoint URL (required when ocr is true).
+    description: OCR LLM endpoint URL (required for OCR review).
     required: false
     default: ""
   ocr_llm_token:
-    description: OCR LLM auth token (required when ocr is true).
+    description: OCR LLM auth token (required for OCR review).
     required: false
     default: ""
   org_profiles:
     description: >-
       Comma-separated organization profiles (e.g. backend/security,backend/sre).
-      Required when ocr is true. Valid values - backend/security, backend/sre,
+      Required for OCR review. Valid values - backend/security, backend/sre,
       frontend/security, frontend/sre.
     required: false
     default: ""
@@ -355,7 +351,6 @@ runs:
     - name: Validate OCR secrets
       id: ocr-secrets
       if: |
-        inputs.ocr == 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -365,7 +360,7 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         if [ -z "${{ inputs.ocr_llm_url }}" ] || [ -z "${{ inputs.ocr_llm_token }}" ]; then
-          echo "::error::OCR_LMM_URL and OCR_LLM_TOKEN secrets are required when ocr is true."
+          echo "::error::OCR_LLM_URL and OCR_LLM_TOKEN secrets are required for OCR review."
           gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
             --body "**OCR review aborted:** missing required OCR secrets (LLM endpoint or token)."
@@ -375,7 +370,6 @@ runs:
     - name: Fetch open PR review threads (OCR)
       id: ocr-threads
       if: |
-        inputs.ocr == 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -467,7 +461,6 @@ runs:
 
     - name: Remap OCR anchors (resolved + current lines)
       if: |
-        inputs.ocr == 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -477,7 +470,6 @@ runs:
 
     - name: Build resolved-thread directives (OCR)
       if: |
-        inputs.ocr == 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -487,7 +479,6 @@ runs:
 
     - name: Build OCR background
       if: |
-        inputs.ocr == 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -497,7 +488,6 @@ runs:
 
     - name: Compile OCR rules
       if: |
-        inputs.ocr == 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -505,8 +495,8 @@ runs:
       shell: bash
       run: |
         ORG_PROFILES_INPUT="${{ inputs.org_profiles }}"
-        if [ "${{ inputs.ocr }}" = "true" ] && [ -z "${ORG_PROFILES_INPUT}" ]; then
-          echo "::error::org_profiles is required when ocr is true. Valid values: backend/security, backend/sre, frontend/security, frontend/sre."
+        if [ -z "${ORG_PROFILES_INPUT}" ]; then
+          echo "::error::org_profiles is required for OCR review. Valid values: backend/security, backend/sre, frontend/security, frontend/sre."
           gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
             --body "**OCR review aborted:** missing required org_profiles input."
@@ -545,7 +535,6 @@ runs:
 
     - name: Install and run OCR
       if: |
-        inputs.ocr == 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -567,7 +556,6 @@ runs:
 
     - name: Post OCR findings
       if: |
-        inputs.ocr == 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -626,7 +614,6 @@ runs:
 
     - name: Append OCR measurement
       if: |
-        inputs.ocr == 'true' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -683,7 +670,6 @@ runs:
     # ── Run Serena fetcher for OCR context ──────────────────────────────────
     - name: Fetch Serena context (OCR)
       if: |
-        inputs.ocr == 'true' &&
         steps.serena.outputs.status == 'available' &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
