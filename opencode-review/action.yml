@@ -682,6 +682,7 @@ runs:
       run: |
         PR_NUMBER="${{ inputs.issue_number || github.event.issue.number }}"
         RESULT=$(cat /tmp/ocr-result.json)
+        mkdir -p docs/poc
         node --input-type=module -e "
           import { buildMeasurementRow } from '\${{ github.action_path }}/dist/ocr/append-measurement.js';
           import { readFileSync, writeFileSync, existsSync } from 'node:fs';
