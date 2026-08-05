@@ -605,10 +605,22 @@ runs:
         ocr config set llm.auth_token "${{ inputs.ocr_llm_token }}"
         ocr config set llm.protocol openai
         ocr config set llm.model deepseek-v4-pro
+        echo "=== Diagnostic: input sizes ==="
+        wc -c "$RUNNER_TEMP/ocr-rule.json" /tmp/background.md || true
+        echo "=== Diagnostic: LLM endpoint test ==="
+        curl -s -o /dev/null -w "HTTP %{http_code} in %{time_total}s\n" \
+          "${{ inputs.ocr_llm_url }}/models" \
+          -H "Authorization: Bearer ${{ inputs.ocr_llm_token }}" || echo "curl failed"
+        echo "=== Running OCR review ==="
         ocr review --from "$BASE_SHA" --to "$HEAD_SHA" \
           --rule "$RUNNER_TEMP/ocr-rule.json" \
           --background-file /tmp/background.md \
-          --format json > /tmp/findings.json
+          --format json > /tmp/findings.json 2>/tmp/ocr-stderr.txt
+        OCR_EXIT=$?
+        echo "=== OCR stderr ==="
+        cat /tmp/ocr-stderr.txt
+        echo "=== OCR exit code: $OCR_EXIT ==="
+        exit $OCR_EXIT
 
     - name: Post OCR findings
       if: |
