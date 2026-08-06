@@ -1,4 +1,42 @@
-export function computeFindings({ findings, anchors }) {
+const HUNK_RE = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/;
+export function parseDiffPatches(files) {
+    const map = new Map();
+    for (const file of files) {
+        if (!file.patch)
+            continue;
+        const ranges = [];
+        for (const line of file.patch.split("\n")) {
+            const m = line.match(HUNK_RE);
+            if (!m)
+                continue;
+            const start = Number(m[1]);
+            const count = m[2] != null ? Number(m[2]) : 1;
+            ranges.push([start, start + count - 1]);
+        }
+        if (ranges.length > 0)
+            map.set(file.filename, ranges);
+    }
+    return map;
+}
+export function snapToDiffLine(line, ranges) {
+    for (const [s, e] of ranges) {
+        if (line >= s && line <= e)
+            return line;
+    }
+    let best = null;
+    let bestDist = Infinity;
+    for (const [s, e] of ranges) {
+        const d = Math.min(Math.abs(line - s), Math.abs(line - e));
+        if (d < bestDist) {
+            bestDist = d;
+            best = [s, e];
+        }
+    }
+    if (!best)
+        return line;
+    return Math.abs(line - best[0]) <= Math.abs(line - best[1]) ? best[0] : best[1];
+}
+export function computeFindings({ findings, anchors, diffLines }) {
     const f = findings ?? [];
     const a = anchors ?? [];
     const isMatch = (finding, anchor) => {
@@ -25,9 +63,19 @@ export function computeFindings({ findings, anchors }) {
             dropped.push(finding);
         }
     }
+    let snappedCount = 0;
     const comments = kept.map((finding) => {
         const sevCat = `${finding.severity ?? "Info"}/${finding.category ?? "General"}`;
-        const line = finding.line ?? finding.start_line ?? finding.end_line ?? 0;
+        let line = finding.line ?? finding.start_line ?? finding.end_line ?? 0;
+        if (diffLines && line > 0) {
+            const ranges = diffLines.get(finding.path);
+            if (ranges) {
+                const snapped = snapToDiffLine(line, ranges);
+                if (snapped !== line)
+                    snappedCount++;
+                line = snapped;
+            }
+        }
         return {
             path: finding.path,
             line,
@@ -41,7 +89,7 @@ export function computeFindings({ findings, anchors }) {
             message = `No new findings. ${total} previously flagged issue${total !== 1 ? "s" : ""} (${dropped.length} still open, ${resolved.length} resolved) suppressed as duplicate.`;
         }
     }
-    return { kept, dropped, resolved, comments, message, verdictComment: null };
+    return { kept, dropped, resolved, comments, message, verdictComment: null, snappedCount };
 }
 export function buildVerdictComment({ findings, headSha, verdictMarker, headMarker, serenaStatus, manifestFallbackReason }) {
     const criticalCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "CRITICAL").length;

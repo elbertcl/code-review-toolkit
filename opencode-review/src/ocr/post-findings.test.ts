@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { computeFindings, buildVerdictComment } from "./post-findings.js";
+import { computeFindings, buildVerdictComment, parseDiffPatches, snapToDiffLine } from "./post-findings.js";
 
 describe("computeFindings", () => {
   const sampleFindings = [
@@ -78,6 +78,83 @@ describe("computeFindings", () => {
     assert.match(result.message!, /3 previously flagged/);
     assert.match(result.message!, /1 still open/);
     assert.match(result.message!, /2 resolved/);
+  });
+
+  it("snaps off-diff comment lines to nearest hunk endpoint", () => {
+    const findings = [{ path: "main.go", line: 8, severity: "High", message: "bug" }];
+    const diffLines: Map<string, Array<[number, number]>> = new Map([["main.go", [[12, 18] as [number, number]]]]);
+    const result = computeFindings({ findings, anchors: [], diffLines });
+    assert.equal(result.comments[0].line, 12);
+    assert.equal(result.snappedCount, 1);
+  });
+
+  it("does not snap when diffLines is not provided", () => {
+    const findings = [{ path: "main.go", line: 8, severity: "High", message: "bug" }];
+    const result = computeFindings({ findings, anchors: [] });
+    assert.equal(result.comments[0].line, 8);
+    assert.equal(result.snappedCount, 0);
+  });
+
+  it("reports snappedCount as 0 when no snapping needed", () => {
+    const findings = [{ path: "main.go", line: 15, severity: "High", message: "bug" }];
+    const diffLines: Map<string, Array<[number, number]>> = new Map([["main.go", [[12, 18] as [number, number]]]]);
+    const result = computeFindings({ findings, anchors: [], diffLines });
+    assert.equal(result.comments[0].line, 15);
+    assert.equal(result.snappedCount, 0);
+  });
+
+  it("initializes snappedCount to 0 with empty diffLines", () => {
+    const findings = [{ path: "main.go", line: 15, severity: "High", message: "bug" }];
+    const result = computeFindings({ findings, anchors: [], diffLines: null });
+    assert.equal(result.snappedCount, 0);
+    assert.equal(result.comments[0].line, 15);
+  });
+});
+
+describe("parseDiffPatches", () => {
+  it("extracts hunk ranges from a standard patch", () => {
+    const files = [{
+      filename: "main.go",
+      patch: "@@ -10,5 +12,7 @@\n context\n+added\n@@ -50,3 +55,5 @@\n ctx\n+added2\n",
+    }];
+    const map = parseDiffPatches(files);
+    assert.deepEqual(map.get("main.go"), [[12, 18], [55, 59]]);
+  });
+
+  it("handles hunk with implicit count of 1", () => {
+    const files = [{ filename: "a.go", patch: "@@ -5 +6 @@\n+x\n" }];
+    const map = parseDiffPatches(files);
+    assert.deepEqual(map.get("a.go"), [[6, 6]]);
+  });
+
+  it("skips files with no patch (binary or large)", () => {
+    const files = [{ filename: "img.png", patch: null }, { filename: "big.go", patch: undefined }];
+    const map = parseDiffPatches(files);
+    assert.equal(map.size, 0);
+  });
+});
+
+describe("snapToDiffLine", () => {
+  const ranges: Array<[number, number]> = [[12, 18], [55, 59]];
+
+  it("returns the line unchanged when inside a hunk", () => {
+    assert.equal(snapToDiffLine(15, ranges), 15);
+  });
+
+  it("snaps to nearest hunk start when below all hunks", () => {
+    assert.equal(snapToDiffLine(8, ranges), 12);
+  });
+
+  it("snaps to nearest hunk endpoint when between hunks", () => {
+    assert.equal(snapToDiffLine(30, ranges), 18);
+  });
+
+  it("snaps to nearest hunk end when above all hunks", () => {
+    assert.equal(snapToDiffLine(80, ranges), 59);
+  });
+
+  it("returns line unchanged when ranges is empty", () => {
+    assert.equal(snapToDiffLine(50, []), 50);
   });
 });
 
