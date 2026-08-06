@@ -192,4 +192,26 @@ describe("buildVerdictComment", () => {
         assert.match(result, /findings-json-end/);
     });
 });
+describe("buildVerdictComment manifest status", () => {
+    it("shows READY when manifestStatus omitted (back-compat)", () => {
+        const body = buildVerdictComment({ findings: [], headSha: "abc", verdictMarker: "<!-- v -->", headMarker: "<!-- h:" });
+        assert.match(body, /REVIEW\.md: loaded/);
+        assert.doesNotMatch(body, /Context status/);
+    });
+    it("shows fallback reason when provided", () => {
+        const body = buildVerdictComment({
+            findings: [], headSha: "abc", verdictMarker: "<!-- v -->", headMarker: "<!-- h:",
+            manifestStatus: { fallbackReason: "REVIEW.md not found in repo" },
+        });
+        assert.match(body, /REVIEW\.md: not loaded \(REVIEW\.md not found in repo\)/);
+    });
+    it("shows READY_WITH_GAPS + missing optional list", () => {
+        const body = buildVerdictComment({
+            findings: [], headSha: "abc", verdictMarker: "<!-- v -->", headMarker: "<!-- h:",
+            manifestStatus: { status: "READY_WITH_GAPS", missingOptional: ["docs/extra.md", "docs/x.md"] },
+        });
+        assert.match(body, /Context status: READY_WITH_GAPS/);
+        assert.match(body, /Missing optional context: docs\/extra\.md, docs\/x\.md/);
+    });
+});
 //# sourceMappingURL=post-findings.test.js.map

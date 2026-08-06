@@ -711,9 +711,11 @@ runs:
           }
 
           let serenaStatus = process.env.SERENA_STATUS || 'unavailable';
-          let manifestFallbackReason = '';
-          if (fs.existsSync('/tmp/manifest-fallback-reason')) {
-            manifestFallbackReason = fs.readFileSync('/tmp/manifest-fallback-reason', 'utf8').trim();
+          let manifestStatus = undefined;
+          if (fs.existsSync('/tmp/manifest-status.json')) {
+            manifestStatus = JSON.parse(fs.readFileSync('/tmp/manifest-status.json', 'utf8'));
+          } else if (fs.existsSync('/tmp/manifest-fallback-reason')) {
+            manifestStatus = { fallbackReason: fs.readFileSync('/tmp/manifest-fallback-reason', 'utf8').trim() };
           }
 
           const verdictBody = buildVerdictComment({
@@ -722,7 +724,7 @@ runs:
             verdictMarker: '\${{ inputs.verdict_marker }}',
             headMarker: '\${{ inputs.head_marker }}',
             serenaStatus,
-            manifestFallbackReason,
+            manifestStatus,
           });
           await github.rest.issues.createComment({
             owner: context.repo.owner,

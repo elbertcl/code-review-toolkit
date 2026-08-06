@@ -133,6 +133,12 @@ export function computeFindings({ findings, anchors, diffLines }: ComputeFinding
   return { kept, dropped, resolved, comments, message, verdictComment: null, snappedCount };
 }
 
+interface ManifestStatusInfo {
+  fallbackReason?: string;
+  status?: "READY" | "READY_WITH_GAPS" | "BLOCKED";
+  missingOptional?: string[];
+}
+
 interface BuildVerdictInput {
   findings: Finding[];
   headSha: string;
@@ -140,9 +146,10 @@ interface BuildVerdictInput {
   headMarker: string;
   serenaStatus?: string;
   manifestFallbackReason?: string;
+  manifestStatus?: ManifestStatusInfo;
 }
 
-export function buildVerdictComment({ findings, headSha, verdictMarker, headMarker, serenaStatus, manifestFallbackReason }: BuildVerdictInput): string {
+export function buildVerdictComment({ findings, headSha, verdictMarker, headMarker, serenaStatus, manifestFallbackReason, manifestStatus }: BuildVerdictInput): string {
   const criticalCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "CRITICAL").length;
   const highCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "HIGH").length;
   const mediumCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "MEDIUM").length;
@@ -160,13 +167,21 @@ export function buildVerdictComment({ findings, headSha, verdictMarker, headMark
   }));
 
   const serenaLabel = serenaStatus === "available" ? "available" : "not available";
-  const reviewMdLabel = manifestFallbackReason ? `not loaded (${manifestFallbackReason})` : "loaded";
+  const reason = manifestStatus?.fallbackReason ?? manifestFallbackReason ?? "";
+  const reviewMdLabel = reason ? `not loaded (${reason})` : "loaded";
+
+  const contextLines = [`- Serena: ${serenaLabel}`, `- REVIEW.md: ${reviewMdLabel}`];
+  if (manifestStatus?.status) {
+    contextLines.push(`- Context status: ${manifestStatus.status}`);
+  }
+  if (manifestStatus?.missingOptional && manifestStatus.missingOptional.length > 0) {
+    contextLines.push(`- Missing optional context: ${manifestStatus.missingOptional.join(", ")}`);
+  }
 
   return `## Review Verdict
 
 **Context:**
-- Serena: ${serenaLabel}
-- REVIEW.md: ${reviewMdLabel}
+${contextLines.join("\n")}
 
 **Verdict: ${verdict}** — ${total} finding${total !== 1 ? "s" : ""} (${criticalCount} CRITICAL, ${highCount} HIGH, ${mediumCount} MEDIUM, ${lowCount} LOW)
 
