@@ -58,11 +58,6 @@ docs are reorganized.
    - READY_WITH_GAPS — REVIEW.md exists; optional context missing (review proceeds).
    - BLOCKED — required context missing/incomplete, or manifest failed validation.
 
-5. **Report verdict.**
-   - READY — REVIEW.md exists and required context is complete.
-   - READY_WITH_GAPS — REVIEW.md exists and gap stubs were created.
-   - BLOCKED — required context could not be created, read, or validated.
-
 ## Notes
 - Never invent business rules. Missing knowledge becomes a gap stub, not a fake rule.
 - The consuming repo commits the workflow and REVIEW.md.
