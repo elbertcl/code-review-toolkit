@@ -127,7 +127,7 @@ runs:
     # ── PR metadata + mode detection ───────────────────────────────────────
     - name: Resolve PR metadata and acknowledge
       id: pr-info
-      uses: actions/github-script@v7
+      uses: actions/github-script@v8
       with:
         github-token: ${{ github.token }}
         script: |
@@ -195,7 +195,7 @@ runs:
     - name: Re-review pre-flight check
       id: preflight
       if: steps.pr-info.outputs.skip == 'false' && steps.pr-info.outputs.mode == 're-review'
-      uses: actions/github-script@v7
+      uses: actions/github-script@v8
       with:
         github-token: ${{ github.token }}
         script: |
@@ -276,7 +276,7 @@ runs:
     - name: Re-review security check
       id: security
       if: steps.pr-info.outputs.skip == 'false' && steps.pr-info.outputs.mode == 're-review' && steps.preflight.outputs.skip != 'true' && steps.preflight.outputs.mode_override != 'review'
-      uses: actions/github-script@v7
+      uses: actions/github-script@v8
       with:
         github-token: ${{ github.token }}
         script: |
@@ -347,6 +347,14 @@ runs:
         echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
         echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
+    # ── Serena cache ───────────────────────────────────────────────────────
+    - name: Cache Serena uvx
+      if: inputs.serena == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/serena/cache
+        key: serena-uvx-${{ inputs.serena_sha }}
+
     # ── Serena setup (fail-open, used by review fetcher) ──────────────────────
     - name: Set up Serena
       id: serena
@@ -411,7 +419,7 @@ runs:
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
         steps.security.outputs.skip != 'true'
-      uses: actions/github-script@v7
+      uses: actions/github-script@v8
       env:
         PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
       with:
@@ -601,7 +609,7 @@ runs:
         BASE_SHA: ${{ steps.context.outputs.base_sha }}
         HEAD_SHA: ${{ steps.context.outputs.head_sha }}
       run: |
-        npm install -g --force @alibaba-group/open-code-review@1.8.1 2>&1
+        npm install -g --force @alibaba-group/open-code-review@1.8.9 2>&1
         hash -r
         which ocr || { echo "::error::ocr CLI not found after install"; exit 1; }
         ocr config set llm.url "${{ inputs.ocr_llm_url }}"
@@ -620,7 +628,7 @@ runs:
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
         steps.security.outputs.skip != 'true'
-      uses: actions/github-script@v7
+      uses: actions/github-script@v8
       env:
         HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
         PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
@@ -638,17 +646,57 @@ runs:
             anchors = JSON.parse(fs.readFileSync('/tmp/remapped-anchors.json', 'utf8'));
           }
 
-          const { computeFindings, buildVerdictComment } = await import('\${{ github.action_path }}/dist/ocr/post-findings.js');
-          const result = computeFindings({ findings, anchors });
+          const { computeFindings, buildVerdictComment, parseDiffPatches } = await import('\${{ github.action_path }}/dist/ocr/post-findings.js');
+          const { data: prFiles } = await github.rest.pulls.listFiles({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: prNumber,
+            per_page: 100,
+          });
+          const diffLines = parseDiffPatches(prFiles.map(f => ({ filename: f.filename, patch: f.patch })));
+          const result = computeFindings({ findings, anchors, diffLines });
 
           if (result.comments.length > 0) {
-            await github.rest.pulls.createReview({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-              event: 'COMMENT',
-              comments: result.comments,
-            });
+            try {
+              await github.rest.pulls.createReview({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                event: 'COMMENT',
+                comments: result.comments,
+              });
+            } catch (e) {
+              if (e.status === 422) {
+                core.warning(`Batch createReview got 422 — retrying per-comment and downgrading failures`);
+                const failedComments = [];
+                for (const comment of result.comments) {
+                  try {
+                    await github.rest.pulls.createReview({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      pull_number: prNumber,
+                      event: 'COMMENT',
+                      comments: [comment],
+                    });
+                  } catch (e2) {
+                    failedComments.push(comment);
+                  }
+                }
+                if (failedComments.length > 0) {
+                  const body = failedComments.map(c =>
+                    `**${c.path}:${c.line}** (line not in diff — posted as summary)\n\n${c.body}`
+                  ).join('\n\n---\n\n');
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: prNumber,
+                    body: `### Review findings (non-inline)\n\n${body}`,
+                  });
+                }
+              } else {
+                throw e;
+              }
+            }
           }
 
           if (result.message) {
@@ -681,43 +729,7 @@ runs:
             body: verdictBody,
           });
 
-          fs.writeFileSync('/tmp/ocr-result.json', JSON.stringify({ kept: result.kept.length, dropped: result.dropped.length, resolved: result.resolved.length }));
-
-    - name: Append measurement
-      if: |
-        steps.pr-info.outputs.skip == 'false' &&
-        steps.preflight.outputs.skip != 'true' &&
-        steps.loop_guard.outputs.skip != 'true' &&
-        steps.security.outputs.skip != 'true'
-      shell: bash
-      env:
-        HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
-      run: |
-        PR_NUMBER="${{ inputs.issue_number || github.event.issue.number }}"
-        RESULT=$(cat /tmp/ocr-result.json)
-        mkdir -p docs/poc
-        node --input-type=module -e "
-          import { buildMeasurementRow } from '\${{ github.action_path }}/dist/ocr/append-measurement.js';
-          import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-          const findingsRaw = JSON.parse(readFileSync('/tmp/findings.json', 'utf8'));
-          const findings = Array.isArray(findingsRaw) ? findingsRaw : (findingsRaw.comments || []);
-          const result = JSON.parse(readFileSync('/tmp/ocr-result.json', 'utf8'));
-          const row = buildMeasurementRow({
-            verdict: findings.length > 0 ? 'flagged' : 'clean',
-            findings,
-            suppressed: (result.dropped || 0) + (result.resolved || 0),
-            tokens: { total: 0 },
-            prNumber: Number('$PR_NUMBER'),
-            sha: '${{ env.HEAD_SHA }}',
-          });
-          const path = 'docs/poc/reviewtooling-lane-measurements.json';
-          let rows = [];
-          if (existsSync(path)) {
-            try { rows = JSON.parse(readFileSync(path, 'utf8')); } catch {}
-          }
-          rows.push(row);
-          writeFileSync(path, JSON.stringify(rows, null, 2) + '\n');
-        "
+          fs.writeFileSync('/tmp/ocr-result.json', JSON.stringify({ kept: result.kept.length, dropped: result.dropped.length, resolved: result.resolved.length, snapped: result.snappedCount }));
 
     # ── Emit per-run telemetry (uploaded as an artifact) ─────────────────────
     - name: Emit review telemetry
@@ -742,14 +754,24 @@ runs:
             mode: process.env.MODE || null,
             base_sha: process.env.BASE_SHA || null,
             head_sha: process.env.HEAD_SHA || null,
-            serena: { status: process.env.SERENA_STATUS || 'disabled' }
+            serena: { status: process.env.SERENA_STATUS || 'disabled' },
+            model: 'deepseek/deepseek-v4-pro',
+          };
+          let ocrResult = {};
+          try { ocrResult = JSON.parse(fs.readFileSync('/tmp/ocr-result.json', 'utf8')); } catch {}
+          row.verdict = (ocrResult.kept || 0) > 0 ? 'FAIL' : 'PASS';
+          row.findings = {
+            kept: ocrResult.kept || 0,
+            dropped: ocrResult.dropped || 0,
+            resolved: ocrResult.resolved || 0,
+            snapped: ocrResult.snapped || 0,
           };
           fs.writeFileSync(process.env.RUNNER_TEMP + '/telemetry/review-run.json', JSON.stringify(row, null, 2) + '\n');
         "
 
     - name: Upload telemetry artifact
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: review-telemetry-${{ github.run_id }}
         path: ${{ runner.temp }}/telemetry/review-run.json

@@ -15,9 +15,17 @@ interface Anchor {
   is_resolved: boolean;
 }
 
+interface DiffFile {
+  filename: string;
+  patch?: string | null;
+}
+
+type DiffRanges = Map<string, Array<[number, number]>>;
+
 interface ComputeFindingsInput {
   findings: Finding[] | null | undefined;
   anchors: Anchor[] | null | undefined;
+  diffLines?: DiffRanges | null;
 }
 
 interface Comment {
@@ -33,9 +41,43 @@ interface ComputeFindingsResult {
   comments: Comment[];
   message: string | null;
   verdictComment: string | null;
+  snappedCount: number;
 }
 
-export function computeFindings({ findings, anchors }: ComputeFindingsInput): ComputeFindingsResult {
+const HUNK_RE = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/;
+
+export function parseDiffPatches(files: DiffFile[]): DiffRanges {
+  const map: DiffRanges = new Map();
+  for (const file of files) {
+    if (!file.patch) continue;
+    const ranges: Array<[number, number]> = [];
+    for (const line of file.patch.split("\n")) {
+      const m = line.match(HUNK_RE);
+      if (!m) continue;
+      const start = Number(m[1]);
+      const count = m[2] != null ? Number(m[2]) : 1;
+      ranges.push([start, start + count - 1]);
+    }
+    if (ranges.length > 0) map.set(file.filename, ranges);
+  }
+  return map;
+}
+
+export function snapToDiffLine(line: number, ranges: Array<[number, number]>): number {
+  for (const [s, e] of ranges) {
+    if (line >= s && line <= e) return line;
+  }
+  let best: [number, number] | null = null;
+  let bestDist = Infinity;
+  for (const [s, e] of ranges) {
+    const d = Math.min(Math.abs(line - s), Math.abs(line - e));
+    if (d < bestDist) { bestDist = d; best = [s, e]; }
+  }
+  if (!best) return line;
+  return Math.abs(line - best[0]) <= Math.abs(line - best[1]) ? best[0] : best[1];
+}
+
+export function computeFindings({ findings, anchors, diffLines }: ComputeFindingsInput): ComputeFindingsResult {
   const f = findings ?? [];
   const a = anchors ?? [];
 
@@ -61,9 +103,18 @@ export function computeFindings({ findings, anchors }: ComputeFindingsInput): Co
     }
   }
 
+  let snappedCount = 0;
   const comments: Comment[] = kept.map((finding) => {
     const sevCat = `${finding.severity ?? "Info"}/${finding.category ?? "General"}`;
-    const line = finding.line ?? finding.start_line ?? finding.end_line ?? 0;
+    let line = finding.line ?? finding.start_line ?? finding.end_line ?? 0;
+    if (diffLines && line > 0) {
+      const ranges = diffLines.get(finding.path);
+      if (ranges) {
+        const snapped = snapToDiffLine(line, ranges);
+        if (snapped !== line) snappedCount++;
+        line = snapped;
+      }
+    }
     return {
       path: finding.path,
       line,
@@ -79,7 +130,7 @@ export function computeFindings({ findings, anchors }: ComputeFindingsInput): Co
     }
   }
 
-  return { kept, dropped, resolved, comments, message, verdictComment: null };
+  return { kept, dropped, resolved, comments, message, verdictComment: null, snappedCount };
 }
 
 interface BuildVerdictInput {
