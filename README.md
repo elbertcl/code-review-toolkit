@@ -132,18 +132,32 @@ Valid values: `backend/security`, `backend/sre`, `frontend/security`, `frontend/
 Multi-profile repos use both backend and frontend profiles; `fullstack` = all four.
 **Fail-closed:** empty or unknown profiles abort the review.
 
-### Tiered defaults
+### Tiered defaults (enforced at runtime)
 
-The toolkit ships locked and bounded defaults (`context/defaults/manifest-defaults.json`):
-- **LOCKED** fields (union/replace): `excluded_paths`, `diff_override`, `review_directives` — repos cannot loosen, only add
-- **BOUNDED** fields (ceiling): `diff_limits` (max 100 files / 5000 lines), `docs_only_paths` (union)
+The toolkit ships locked and bounded defaults (`context/defaults/manifest-defaults.json`),
+applied by `resolve-manifest` before every review:
+- **LOCKED** fields: `excluded_paths` (union), `diff_override` (must equal default),
+  `review_directives` (toolkit directives prepended) — repos cannot loosen these.
+- **BOUNDED** fields: `diff_limits` (ceiling 100 files / 5000 lines — repo must be ≤),
+  `docs_only_paths` (union).
 
-Repos omit these fields to inherit; override only with stricter values.
+These keys are required in the repo manifest (copy them from `REVIEW.example.md`);
+their values are validated against the toolkit defaults on every run. A repo that
+exceeds a ceiling or weakens a locked value is blocked (status BLOCKED).
+
+### Required-context enforcement
+
+`resolve-manifest` also classifies context: a missing or incomplete (`ASTRO_REVIEW_CONTEXT_INCOMPLETE`)
+required_context file — or a conditional_context doc whose `when_changed` glob matches the
+diff — blocks the review (status BLOCKED). Set `fail_closed_context: "false"` in the workflow
+to downgrade this to a warning during migration. Optional-context gaps produce a
+READY_WITH_GAPS verdict and the review proceeds.
 
 ### `REVIEW.example.md`
 
-An annotated example manifest ships in `context/defaults/REVIEW.example.md` for onboarding
-new repos.
+A copy-pasteable example manifest ships in `context/defaults/REVIEW.example.md` for onboarding
+new repos. Run the `initialize-review-context` skill to detect existing docs and generate a
+`REVIEW.md` from them.
 
 ### Thin POC lanes (deprecated — OCR is the sole engine in v4.3+)
 
