@@ -543,6 +543,8 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
         SERENA_STATUS: ${{ steps.serena.outputs.status }}
+        ORG_PROFILES_INPUT: ${{ inputs.org_profiles }}
+        FAIL_CLOSED_CONTEXT: ${{ inputs.fail_closed_context }}
       run: |
         ORG_PROFILES_INPUT="${{ inputs.org_profiles }}"
         if [ -z "${ORG_PROFILES_INPUT}" ]; then
@@ -552,33 +554,33 @@ runs:
             --body "**Review aborted:** missing required org_profiles input."
           exit 1
         fi
+        export ORG_PROFILES_INPUT
+        node "${{ github.action_path }}/dist/context/resolve-manifest.js" \
+          "REVIEW.md" \
+          "${{ github.action_path }}/context/defaults/REVIEW.md" \
+          "${{ github.action_path }}/context/defaults/manifest-defaults.json" \
+          "${RUNNER_TEMP}/changed-files.json" \
+          "$PWD" \
+          "/tmp/resolved-manifest.json" \
+          "/tmp/manifest-status.json"
+        STATUS=$(node -pe "JSON.parse(require('fs').readFileSync('/tmp/manifest-status.json','utf8')).status")
+        if [ "$STATUS" = "BLOCKED" ] && [ "${FAIL_CLOSED_CONTEXT}" = "true" ]; then
+          BODY=$(node -e "const s=JSON.parse(require('fs').readFileSync('/tmp/manifest-status.json','utf8'));process.stdout.write('**Review aborted:** required review context is missing or invalid. Fix these and re-run \`/review-ocr\`:\n\n'+s.blockers.map(b=>'- '+b).join('\n'))")
+          gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "$BODY"
+          exit 1
+        fi
         node --input-type=module -e "
           import { compileOcrRules } from '\${{ github.action_path }}/dist/ocr/compile-ocr-rules.js';
-          import { parseManifest, validateManifest } from '\${{ github.action_path }}/dist/context/lib/review-manifest.js';
           import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-          const repoPath = 'REVIEW.md';
-          const fallbackPath = '\${{ github.action_path }}/context/defaults/REVIEW.md';
-          let manifest, usedFallback = false, fallbackReason = '';
-          function loadValid(p) { return validateManifest(parseManifest(readFileSync(p, 'utf8'))); }
-          if (!existsSync(repoPath)) {
-            usedFallback = true; fallbackReason = 'REVIEW.md not found in repo';
-            manifest = loadValid(fallbackPath);
-          } else {
-            try {
-              manifest = loadValid(repoPath);
-            } catch (e) {
-              usedFallback = true;
-              fallbackReason = 'REVIEW.md is invalid: ' + e.message;
-              manifest = loadValid(fallbackPath);
-            }
-          }
-          if (usedFallback) writeFileSync('/tmp/manifest-fallback-reason', fallbackReason);
+          const manifest = JSON.parse(readFileSync('/tmp/resolved-manifest.json', 'utf8'));
           const policyBody = existsSync(manifest.policy_path) ? readFileSync(manifest.policy_path, 'utf8') : '';
           let resolvedDirectives = [];
           if (existsSync('/tmp/resolved-directives.json')) {
             resolvedDirectives = JSON.parse(readFileSync('/tmp/resolved-directives.json', 'utf8'));
           }
-          const orgProfiles = process.env.ORG_PROFILES_INPUT ? process.env.ORG_PROFILES_INPUT.split(',').map(p => p.trim()).filter(Boolean) : [];
+          const orgProfiles = process.env.ORG_PROFILES_INPUT.split(',').map(p => p.trim()).filter(Boolean);
           const rules = compileOcrRules({
             workspace: process.cwd(),
             changedFiles: [],
@@ -590,12 +592,12 @@ runs:
           });
           writeFileSync(process.env.RUNNER_TEMP + '/ocr-rule.json', JSON.stringify(rules, null, 2) + '\n');
         "
-        if [ -f /tmp/manifest-fallback-reason ]; then
-          REASON="$(cat /tmp/manifest-fallback-reason)"
+        FALLBACK_REASON=$(node -pe "JSON.parse(require('fs').readFileSync('/tmp/manifest-status.json','utf8')).fallbackReason || ''")
+        if [ -n "${FALLBACK_REASON}" ]; then
           SERENA="${SERENA_STATUS:-unavailable}"
           gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
-            --body "⚠️ **Review ran with ORG-DEFAULT rules only.** Serena: ${SERENA}. Your repo \`REVIEW.md\` was not applied: ${REASON}. Repo-specific rules (conditional invariants, testspecs, review_directives) did **not** apply this run. Fix \`REVIEW.md\` to restore them (see the v4.3 migration)."
+            --body "⚠️ **Review ran with ORG-DEFAULT rules only.** Serena: ${SERENA}. Your repo \`REVIEW.md\` was not applied: ${FALLBACK_REASON}. Repo-specific rules (conditional invariants, testspecs, review_directives) did **not** apply this run. Fix \`REVIEW.md\` to restore them."
         fi
 
     - name: Install and run review CLI
@@ -709,9 +711,11 @@ runs:
           }
 
           let serenaStatus = process.env.SERENA_STATUS || 'unavailable';
-          let manifestFallbackReason = '';
-          if (fs.existsSync('/tmp/manifest-fallback-reason')) {
-            manifestFallbackReason = fs.readFileSync('/tmp/manifest-fallback-reason', 'utf8').trim();
+          let manifestStatus = undefined;
+          if (fs.existsSync('/tmp/manifest-status.json')) {
+            manifestStatus = JSON.parse(fs.readFileSync('/tmp/manifest-status.json', 'utf8'));
+          } else if (fs.existsSync('/tmp/manifest-fallback-reason')) {
+            manifestStatus = { fallbackReason: fs.readFileSync('/tmp/manifest-fallback-reason', 'utf8').trim() };
           }
 
           const verdictBody = buildVerdictComment({
@@ -720,7 +724,7 @@ runs:
             verdictMarker: '\${{ inputs.verdict_marker }}',
             headMarker: '\${{ inputs.head_marker }}',
             serenaStatus,
-            manifestFallbackReason,
+            manifestStatus,
           });
           await github.rest.issues.createComment({
             owner: context.repo.owner,
