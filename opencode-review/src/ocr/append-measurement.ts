@@ -1,3 +1,5 @@
+import type { CostBreakdown } from "./compute-cost.js";
+
 interface Finding {
   severity?: string;
   [key: string]: unknown;
@@ -10,6 +12,9 @@ interface MeasurementRowInput {
   tokens: Record<string, number>;
   prNumber: number;
   sha: string;
+  cost: CostBreakdown | null;
+  elapsedMs: number | null;
+  toolCalls?: Record<string, number> | null;
 }
 
 interface SeverityTally {
@@ -30,9 +35,12 @@ interface MeasurementRow {
   severity_tally: SeverityTally;
   suppressed_as_duplicate: number;
   tokens: Record<string, number | string>;
+  cost: CostBreakdown | null;
+  elapsed_ms: number | null;
+  tool_calls: Record<string, number> | null;
 }
 
-export function buildMeasurementRow({ verdict, findings, suppressed, tokens, prNumber, sha }: MeasurementRowInput): MeasurementRow {
+export function buildMeasurementRow({ verdict, findings, suppressed, tokens, prNumber, sha, cost, elapsedMs, toolCalls }: MeasurementRowInput): MeasurementRow {
   const severityTally: SeverityTally = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
   for (const finding of (findings ?? [])) {
     const sev = finding.severity ?? "Info";
@@ -49,5 +57,8 @@ export function buildMeasurementRow({ verdict, findings, suppressed, tokens, prN
     severity_tally: severityTally,
     suppressed_as_duplicate: suppressed ?? 0,
     tokens: { ...tokens, source: "ocr_native" },
+    cost,
+    elapsed_ms: elapsedMs,
+    tool_calls: toolCalls ?? null,
   };
 }

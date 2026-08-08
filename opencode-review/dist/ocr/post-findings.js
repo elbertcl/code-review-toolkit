@@ -91,7 +91,53 @@ export function computeFindings({ findings, anchors, diffLines }) {
     }
     return { kept, dropped, resolved, comments, message, verdictComment: null, snappedCount };
 }
-export function buildVerdictComment({ findings, headSha, verdictMarker, headMarker, serenaStatus, manifestFallbackReason, manifestStatus }) {
+function formatTokenCount(n) {
+    if (n == null || n === 0)
+        return "0";
+    if (n >= 1_000_000)
+        return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000)
+        return `${Math.round(n / 1_000)}K`;
+    return String(n);
+}
+function formatElapsed(ms) {
+    if (ms == null)
+        return null;
+    const totalSec = Math.round(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}m${s}s`;
+}
+function buildFooter(measurement) {
+    const parts = [];
+    const totalTokens = measurement.tokens.total;
+    const inputTokens = measurement.tokens.input;
+    const outputTokens = measurement.tokens.output;
+    const cacheTokens = measurement.tokens.cache_read;
+    const hasTokens = (totalTokens ?? 0) > 0 || (inputTokens ?? 0) > 0 || (outputTokens ?? 0) > 0;
+    if (hasTokens) {
+        const tokenStr = formatTokenCount(totalTokens);
+        const breakdown = `${formatTokenCount(inputTokens)} input \u00b7 ${formatTokenCount(outputTokens)} output${cacheTokens ? ` \u00b7 ${formatTokenCount(cacheTokens)} cache` : ""}`;
+        parts.push(`${tokenStr} tokens (${breakdown})`);
+    }
+    else {
+        parts.push("tokens unavailable");
+    }
+    const elapsed = formatElapsed(measurement.elapsedMs);
+    if (elapsed)
+        parts.push(elapsed);
+    if (measurement.cost) {
+        parts.push(`$${measurement.cost.total}`);
+    }
+    if (measurement.toolCalls) {
+        const total = measurement.toolCalls.total;
+        if (total != null && total > 0) {
+            parts.push(`${total} tool calls`);
+        }
+    }
+    return `\n---\n**Run:** ${parts.join(" \u00b7 ")}`;
+}
+export function buildVerdictComment({ findings, headSha, verdictMarker, headMarker, serenaStatus, manifestFallbackReason, manifestStatus, measurement }) {
     const criticalCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "CRITICAL").length;
     const highCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "HIGH").length;
     const mediumCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "MEDIUM").length;
@@ -116,6 +162,7 @@ export function buildVerdictComment({ findings, headSha, verdictMarker, headMark
     if (manifestStatus?.missingOptional && manifestStatus.missingOptional.length > 0) {
         contextLines.push(`- Missing optional context: ${manifestStatus.missingOptional.join(", ")}`);
     }
+    const footer = measurement ? buildFooter(measurement) : "";
     return `## Review Verdict
 
 **Context:**
@@ -127,6 +174,6 @@ ${headMarker} ${headSha} -->
 ${verdictMarker}
 <!-- findings-json-start
 ${JSON.stringify(items, null, 2)}
-findings-json-end -->`;
+findings-json-end -->${footer}`;
 }
 //# sourceMappingURL=post-findings.js.map

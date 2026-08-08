@@ -11,6 +11,8 @@ describe("buildMeasurementRow", () => {
       tokens: { total: 5000 },
       prNumber: 42,
       sha: "abc123",
+      cost: null,
+      elapsedMs: null,
     });
 
     assert.equal(row.lane, "ocr");
@@ -32,6 +34,8 @@ describe("buildMeasurementRow", () => {
       tokens: { total: 2000 },
       prNumber: 1,
       sha: "def456",
+      cost: null,
+      elapsedMs: null,
     });
 
     assert.equal(row.severity_tally.Critical, 0);
@@ -46,6 +50,8 @@ describe("buildMeasurementRow", () => {
       tokens: { total: 0 },
       prNumber: 99,
       sha: "sha999",
+      cost: null,
+      elapsedMs: null,
     });
 
     assert.equal(row.pr, 99);
@@ -62,8 +68,95 @@ describe("buildMeasurementRow", () => {
       tokens: { total: 3000 },
       prNumber: 7,
       sha: "abc",
+      cost: null,
+      elapsedMs: null,
     });
 
     assert.equal(row.tokens.total, 3000);
+  });
+
+  it("includes cost breakdown when provided", () => {
+    const row = buildMeasurementRow({
+      verdict: "clean",
+      findings: [],
+      suppressed: 0,
+      tokens: { total: 1000 },
+      prNumber: 1,
+      sha: "abc",
+      cost: { input: 0.01, output: 0.002, cache_read: 0.001, total: 0.013 },
+      elapsedMs: 259647,
+    });
+    assert.deepEqual(row.cost, { input: 0.01, output: 0.002, cache_read: 0.001, total: 0.013 });
+  });
+
+  it("cost is null when not provided", () => {
+    const row = buildMeasurementRow({
+      verdict: "clean",
+      findings: [],
+      suppressed: 0,
+      tokens: { total: 1000 },
+      prNumber: 1,
+      sha: "abc",
+      cost: null,
+      elapsedMs: null,
+    });
+    assert.equal(row.cost, null);
+  });
+
+  it("elapsed_ms passes through correctly", () => {
+    const row = buildMeasurementRow({
+      verdict: "clean",
+      findings: [],
+      suppressed: 0,
+      tokens: { total: 1000 },
+      prNumber: 1,
+      sha: "abc",
+      cost: null,
+      elapsedMs: 259647,
+    });
+    assert.equal(row.elapsed_ms, 259647);
+  });
+
+  it("elapsed_ms is null when not provided", () => {
+    const row = buildMeasurementRow({
+      verdict: "clean",
+      findings: [],
+      suppressed: 0,
+      tokens: { total: 1000 },
+      prNumber: 1,
+      sha: "abc",
+      cost: null,
+      elapsedMs: null,
+    });
+    assert.equal(row.elapsed_ms, null);
+  });
+
+  it("tool_calls passes through when provided", () => {
+    const row = buildMeasurementRow({
+      verdict: "clean",
+      findings: [],
+      suppressed: 0,
+      tokens: { total: 1000 },
+      prNumber: 1,
+      sha: "abc",
+      cost: null,
+      elapsedMs: null,
+      toolCalls: { file_read: 6, code_search: 1 },
+    });
+    assert.deepEqual(row.tool_calls, { file_read: 6, code_search: 1 });
+  });
+
+  it("tool_calls is null when not provided", () => {
+    const row = buildMeasurementRow({
+      verdict: "clean",
+      findings: [],
+      suppressed: 0,
+      tokens: { total: 1000 },
+      prNumber: 1,
+      sha: "abc",
+      cost: null,
+      elapsedMs: null,
+    });
+    assert.equal(row.tool_calls, null);
   });
 });

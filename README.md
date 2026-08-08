@@ -110,6 +110,31 @@ a budgeted (~8KB) reasoning digest that includes:
 Unresolved-but-disputed threads (not marked "Resolved" in GitHub) are anchor-only — no human
 reasoning reaches OCR for active discussions where the reviewer has not clicked "Resolve."
 
+### Cost tracking
+
+The OCR CLI emits token usage and timing data on every run. The toolkit captures
+this and surfaces it in two places:
+
+1. **Verdict comment footer** — every review comment ends with a `**Run:**` line
+   showing token counts, elapsed time, and (if rates are configured) dollar cost.
+
+2. **Telemetry artifact** — the `review-telemetry-<run_id>` artifact includes the
+   full measurement row: `tokens`, `cost`, `elapsed_ms`, `severity_tally`,
+   `tool_calls`, and `suppressed_as_duplicate`.
+
+Dollar cost is **opt-in**. Provide the `ocr_cost_rates` input as a JSON object
+mapping model IDs to per-million-token rates:
+
+```yaml
+- uses: elbertcl/code-review-toolkit/opencode-review@v4
+  with:
+    ocr_llm_url: ${{ secrets.OCR_POC_LLM_URL }}
+    ocr_llm_token: ${{ secrets.OCR_POC_LLM_TOKEN }}
+    ocr_cost_rates: '{"deepseek/deepseek-v4-pro":{"input_per_million":0.14,"output_per_million":0.28,"cache_read_per_million":0.014}}'
+```
+
+When omitted, the footer shows tokens and elapsed time only — no dollar amount.
+
 ### Serena context fetcher
 
 A deterministic MCP stdio client (no LLM) drives Serena headless in CI to produce a bounded
