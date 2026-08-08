@@ -1,4 +1,4 @@
-export function buildMeasurementRow({ verdict, findings, suppressed, tokens, prNumber, sha }) {
+export function buildMeasurementRow({ verdict, findings, suppressed, tokens, prNumber, sha, cost, elapsedMs, toolCalls }) {
     const severityTally = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
     for (const finding of (findings ?? [])) {
         const sev = finding.severity ?? "Info";
@@ -16,6 +16,9 @@ export function buildMeasurementRow({ verdict, findings, suppressed, tokens, prN
         severity_tally: severityTally,
         suppressed_as_duplicate: suppressed ?? 0,
         tokens: { ...tokens, source: "ocr_native" },
+        cost,
+        elapsed_ms: elapsedMs,
+        tool_calls: toolCalls ?? null,
     };
 }
 //# sourceMappingURL=append-measurement.js.map

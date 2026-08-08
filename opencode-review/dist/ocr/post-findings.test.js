@@ -191,6 +191,69 @@ describe("buildVerdictComment", () => {
         assert.match(result, /"line": 5/);
         assert.match(result, /findings-json-end/);
     });
+    it("renders footer with cost when measurement provided", () => {
+        const result = buildVerdictComment({
+            findings: [],
+            headSha: "abc123",
+            verdictMarker: "<!-- opencode-pr-review -->",
+            headMarker: "<!-- reviewed-head:",
+            measurement: {
+                tokens: { total: 188053, input: 177757, output: 10296, cache_read: 126592 },
+                cost: { input: 0.0249, output: 0.0029, cache_read: 0.0018, total: 0.0296 },
+                elapsedMs: 259647,
+                toolCalls: { total: 11 },
+            },
+        });
+        assert.match(result, /\*\*Run:\*\*/);
+        assert.match(result, /188K tokens/);
+        assert.match(result, /178K input/);
+        assert.match(result, /\$0\.0296/);
+        assert.match(result, /4m20s/);
+        assert.match(result, /11 tool calls/);
+    });
+    it("renders footer without cost when cost is null", () => {
+        const result = buildVerdictComment({
+            findings: [],
+            headSha: "abc123",
+            verdictMarker: "<!-- opencode-pr-review -->",
+            headMarker: "<!-- reviewed-head:",
+            measurement: {
+                tokens: { total: 5000, input: 4000, output: 1000 },
+                cost: null,
+                elapsedMs: 60000,
+            },
+        });
+        assert.match(result, /\*\*Run:\*\*/);
+        assert.match(result, /5K tokens/);
+        assert.match(result, /1m0s/);
+        assert.doesNotMatch(result, /\$/);
+    });
+    it("renders 'tokens unavailable' when summary is empty", () => {
+        const result = buildVerdictComment({
+            findings: [],
+            headSha: "abc123",
+            verdictMarker: "<!-- opencode-pr-review -->",
+            headMarker: "<!-- reviewed-head:",
+            measurement: {
+                tokens: {},
+                cost: null,
+                elapsedMs: null,
+            },
+        });
+        assert.match(result, /tokens unavailable/);
+        assert.doesNotMatch(result, /\$/);
+        assert.doesNotMatch(result, /tool calls/);
+    });
+    it("omits footer entirely when measurement not passed (backward-compat)", () => {
+        const result = buildVerdictComment({
+            findings: [],
+            headSha: "abc123",
+            verdictMarker: "<!-- opencode-pr-review -->",
+            headMarker: "<!-- reviewed-head:",
+        });
+        assert.doesNotMatch(result, /\*\*Run:\*\*/);
+        assert.doesNotMatch(result, /tokens/);
+    });
 });
 describe("buildVerdictComment manifest status", () => {
     it("shows READY when manifestStatus omitted (back-compat)", () => {

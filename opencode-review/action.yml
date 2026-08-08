@@ -86,6 +86,14 @@ inputs:
     required: false
     default: "backend/security,backend/sre"
 
+  ocr_cost_rates:
+    description: >-
+      Optional JSON mapping model IDs to per-million-token rates.
+      Example: {"deepseek/deepseek-v4-pro":{"input_per_million":0.14,"output_per_million":0.28,"cache_read_per_million":0.014}}
+      When omitted, tokens and elapsed are shown but no dollar cost.
+    required: false
+    default: ""
+
 runs:
   using: composite
   steps:
@@ -641,8 +649,21 @@ runs:
           const fs = require('fs');
           const prNumber = Number(process.env.PR_NUMBER);
           const headSha = process.env.HEAD_SHA || '';
-          const rawFindings = JSON.parse(fs.readFileSync('/tmp/findings.json', 'utf8'));
+          const rawText = fs.readFileSync('/tmp/findings.json', 'utf8');
+          const jsonStart = rawText.indexOf('{');
+          const jsonEnd = rawText.lastIndexOf('}');
+          const rawFindings = jsonStart >= 0 ? JSON.parse(rawText.slice(jsonStart, jsonEnd + 1)) : {};
           const findings = Array.isArray(rawFindings) ? rawFindings : (rawFindings.comments || []);
+
+          const summary = rawFindings.summary || {};
+          const manifest = rawFindings.manifest || {};
+          const llmModel = rawFindings.llm?.model || manifest?.execution?.model || '';
+          const ocrTokens = {
+            total: summary.total_tokens || 0,
+            input: summary.input_tokens || 0,
+            output: summary.output_tokens || 0,
+            cache_read: summary.cache_read_tokens || 0,
+          };
           let anchors = [];
           if (fs.existsSync('/tmp/remapped-anchors.json')) {
             anchors = JSON.parse(fs.readFileSync('/tmp/remapped-anchors.json', 'utf8'));
@@ -657,6 +678,34 @@ runs:
           });
           const diffLines = parseDiffPatches(prFiles.map(f => ({ filename: f.filename, patch: f.patch })));
           const result = computeFindings({ findings, anchors, diffLines });
+
+          // Parse optional rate table for cost computation
+          let rates = null;
+          const ratesInput = '\${{ inputs.ocr_cost_rates }}';
+          if (ratesInput) {
+            try { rates = JSON.parse(ratesInput); } catch { core.warning('ocr_cost_rates is not valid JSON - cost will be omitted'); }
+          }
+
+          const { computeCost } = await import('\${{ github.action_path }}/dist/ocr/compute-cost.js');
+          const cost = computeCost(
+            { input_tokens: ocrTokens.input, output_tokens: ocrTokens.output, cache_read_tokens: ocrTokens.cache_read },
+            rates,
+            llmModel,
+          );
+
+          const { buildMeasurementRow } = await import('\${{ github.action_path }}/dist/ocr/append-measurement.js');
+          const toolCallsByTool = rawFindings.tool_calls?.by_tool || null;
+          const measurementRow = buildMeasurementRow({
+            verdict: result.kept.length > 0 ? 'FAIL' : 'PASS',
+            findings: result.kept,
+            suppressed: result.dropped.length,
+            tokens: ocrTokens,
+            prNumber,
+            sha: headSha,
+            cost,
+            elapsedMs: manifest?.elapsed_ms || null,
+            toolCalls: toolCallsByTool,
+          });
 
           if (result.comments.length > 0) {
             try {
@@ -725,6 +774,12 @@ runs:
             headMarker: '\${{ inputs.head_marker }}',
             serenaStatus,
             manifestStatus,
+            measurement: {
+              tokens: ocrTokens,
+              cost,
+              elapsedMs: manifest?.elapsed_ms || null,
+              toolCalls: rawFindings.tool_calls,
+            },
           });
           await github.rest.issues.createComment({
             owner: context.repo.owner,
@@ -733,7 +788,13 @@ runs:
             body: verdictBody,
           });
 
-          fs.writeFileSync('/tmp/ocr-result.json', JSON.stringify({ kept: result.kept.length, dropped: result.dropped.length, resolved: result.resolved.length, snapped: result.snappedCount }));
+          fs.writeFileSync('/tmp/ocr-result.json', JSON.stringify({
+            kept: result.kept.length,
+            dropped: result.dropped.length,
+            resolved: result.resolved.length,
+            snapped: result.snappedCount,
+            measurement: measurementRow,
+          }));
 
     # ── Emit per-run telemetry (uploaded as an artifact) ─────────────────────
     - name: Emit review telemetry
@@ -751,24 +812,33 @@ runs:
         mkdir -p "$RUNNER_TEMP/telemetry"
         node -e "
           const fs = require('fs');
+          let ocrResult = {};
+          try { ocrResult = JSON.parse(fs.readFileSync('/tmp/ocr-result.json', 'utf8')); } catch {}
+          const measurement = ocrResult.measurement || {};
+
           const row = {
             pr: Number(process.env.PR_NUMBER),
             run_id: process.env.RUN_ID,
-            engine: process.env.ENGINE || 'agent',
+            engine: process.env.ENGINE || 'ocr',
             mode: process.env.MODE || null,
             base_sha: process.env.BASE_SHA || null,
             head_sha: process.env.HEAD_SHA || null,
             serena: { status: process.env.SERENA_STATUS || 'disabled' },
             model: 'deepseek/deepseek-v4-pro',
-          };
-          let ocrResult = {};
-          try { ocrResult = JSON.parse(fs.readFileSync('/tmp/ocr-result.json', 'utf8')); } catch {}
-          row.verdict = (ocrResult.kept || 0) > 0 ? 'FAIL' : 'PASS';
-          row.findings = {
-            kept: ocrResult.kept || 0,
-            dropped: ocrResult.dropped || 0,
-            resolved: ocrResult.resolved || 0,
-            snapped: ocrResult.snapped || 0,
+            timestamp: measurement.timestamp || new Date().toISOString(),
+            verdict: (ocrResult.kept || 0) > 0 ? 'FAIL' : 'PASS',
+            findings: {
+              kept: ocrResult.kept || 0,
+              dropped: ocrResult.dropped || 0,
+              resolved: ocrResult.resolved || 0,
+              snapped: ocrResult.snapped || 0,
+            },
+            severity_tally: measurement.severity_tally || null,
+            suppressed_as_duplicate: measurement.suppressed_as_duplicate || 0,
+            tokens: measurement.tokens || null,
+            cost: measurement.cost || null,
+            elapsed_ms: measurement.elapsed_ms || null,
+            tool_calls: measurement.tool_calls || null,
           };
           fs.writeFileSync(process.env.RUNNER_TEMP + '/telemetry/review-run.json', JSON.stringify(row, null, 2) + '\n');
         "
