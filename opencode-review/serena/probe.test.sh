@@ -39,7 +39,7 @@ else
   echo "FAIL (expected exit 0, fail-open)"
   exit 1
 fi
-export PATH="${GITHUB_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 echo "PASS"
 
 # Test 3: Status JSON has all required fields
