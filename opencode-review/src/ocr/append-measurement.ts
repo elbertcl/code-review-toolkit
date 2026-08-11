@@ -15,6 +15,7 @@ interface MeasurementRowInput {
   cost: CostBreakdown | null;
   elapsedMs: number | null;
   toolCalls?: Record<string, number> | null;
+  timeToFirstReviewMs?: number | null;
 }
 
 interface SeverityTally {
@@ -38,9 +39,10 @@ interface MeasurementRow {
   cost: CostBreakdown | null;
   elapsed_ms: number | null;
   tool_calls: Record<string, number> | null;
+  time_to_first_review_ms?: number | null;
 }
 
-export function buildMeasurementRow({ verdict, findings, suppressed, tokens, prNumber, sha, cost, elapsedMs, toolCalls }: MeasurementRowInput): MeasurementRow {
+export function buildMeasurementRow({ verdict, findings, suppressed, tokens, prNumber, sha, cost, elapsedMs, toolCalls, timeToFirstReviewMs }: MeasurementRowInput): MeasurementRow {
   const severityTally: SeverityTally = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
   for (const finding of (findings ?? [])) {
     const sev = finding.severity ?? "Info";
@@ -60,5 +62,6 @@ export function buildMeasurementRow({ verdict, findings, suppressed, tokens, prN
     cost,
     elapsed_ms: elapsedMs,
     tool_calls: toolCalls ?? null,
+    time_to_first_review_ms: timeToFirstReviewMs ?? null,
   };
 }

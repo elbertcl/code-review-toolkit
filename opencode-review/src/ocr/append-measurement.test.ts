@@ -159,4 +159,33 @@ describe("buildMeasurementRow", () => {
     });
     assert.equal(row.tool_calls, null);
   });
+
+  it("includes time_to_first_review_ms when provided", () => {
+    const row = buildMeasurementRow({
+      verdict: "clean",
+      findings: [],
+      suppressed: 0,
+      tokens: { total: 1000 },
+      prNumber: 1,
+      sha: "abc",
+      cost: null,
+      elapsedMs: null,
+      timeToFirstReviewMs: 3600000,
+    });
+    assert.equal(row.time_to_first_review_ms, 3600000);
+  });
+
+  it("time_to_first_review_ms is null when not provided", () => {
+    const row = buildMeasurementRow({
+      verdict: "clean",
+      findings: [],
+      suppressed: 0,
+      tokens: { total: 1000 },
+      prNumber: 1,
+      sha: "abc",
+      cost: null,
+      elapsedMs: null,
+    });
+    assert.equal(row.time_to_first_review_ms, null);
+  });
 });
