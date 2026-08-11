@@ -109,6 +109,24 @@ describe("computeFindings", () => {
     assert.equal(result.snappedCount, 0);
     assert.equal(result.comments[0].line, 15);
   });
+
+  it("renders GitHub suggestion block when finding has suggestion_code", () => {
+    const findings = [
+      { path: "a.go", line: 10, severity: "High", category: "Bug", message: "null deref", suggestion_code: "if x != nil {" },
+    ];
+    const result = computeFindings({ findings, anchors: [] });
+    assert.equal(result.comments.length, 1);
+    assert.match(result.comments[0].body, /```suggestion/);
+    assert.match(result.comments[0].body, /if x != nil/);
+  });
+
+  it("does not render suggestion block when finding has no suggestion_code", () => {
+    const findings = [
+      { path: "a.go", line: 10, severity: "High", category: "Bug", message: "null deref" },
+    ];
+    const result = computeFindings({ findings, anchors: [] });
+    assert.doesNotMatch(result.comments[0].body, /```suggestion/);
+  });
 });
 
 describe("parseDiffPatches", () => {
@@ -307,5 +325,33 @@ describe("buildVerdictComment manifest status", () => {
     });
     assert.match(body, /Context status: READY_WITH_GAPS/);
     assert.match(body, /Missing optional context: docs\/extra\.md, docs\/x\.md/);
+  });
+});
+
+describe("buildVerdictComment suggestion_code", () => {
+  it("includes suggestion_code in verdict JSON suggested_fix field", () => {
+    const findings = [
+      { path: "a.go", line: 10, severity: "High", category: "Bug", message: "null deref", suggestion_code: "if x != nil {" },
+    ];
+    const body = buildVerdictComment({
+      findings,
+      headSha: "abc",
+      verdictMarker: "<!-- v -->",
+      headMarker: "<!-- h:",
+    });
+    assert.match(body, /"suggested_fix": "if x != nil {"/);
+  });
+
+  it("suggested_fix is empty string when no suggestion_code", () => {
+    const findings = [
+      { path: "a.go", line: 10, severity: "High", category: "Bug", message: "null deref" },
+    ];
+    const body = buildVerdictComment({
+      findings,
+      headSha: "abc",
+      verdictMarker: "<!-- v -->",
+      headMarker: "<!-- h:",
+    });
+    assert.match(body, /"suggested_fix": ""/);
   });
 });

@@ -74,11 +74,36 @@ else
 fi
 PROBE_END_MS=$(($(date +%s%N) / 1000000))
 
+# ── Deep probe: verify MCP server starts and responds ────────────────────
+DEEP_STATUS="available"
+DEEP_PROBE_MS=0
+if [ "$PROBE_STATUS" = "available" ]; then
+  DEEP_START=$(($(date +%s%N) / 1000000))
+  # Start the MCP server, send an initialize request, check for valid JSON-RPC response
+  DEEP_INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1.0.0"}}}'
+  if echo "$DEEP_INIT" | timeout 30s env SERENA_HOME="$SERENA_HOME" SERENA_REVISION="$SERENA_SHA" \
+    "$SERENA_HOME/bin/serena-readonly" 2>/dev/null | \
+    python3 -c "import sys,json; r=json.loads(sys.stdin.readline()); assert 'result' in r" 2>/dev/null; then
+    DEEP_STATUS="available"
+  else
+    DEEP_STATUS="degraded"
+  fi
+  DEEP_END=$(($(date +%s%N) / 1000000))
+  DEEP_PROBE_MS=$((DEEP_END - DEEP_START))
+fi
+# Use degraded overall status when help passes but MCP fails
+FINAL_STATUS="$PROBE_STATUS"
+FINAL_REASON="probe_${PROBE_STATUS}"
+if [ "$PROBE_STATUS" = "available" ] && [ "$DEEP_STATUS" = "degraded" ]; then
+  FINAL_STATUS="degraded"
+  FINAL_REASON="help_ok_mcp_unresponsive"
+fi
+
 cat > "$STATUS_PATH" <<EOF
-{"schema_version":1,"status":"${PROBE_STATUS}","reason":"probe_${PROBE_STATUS}","revision":"${SERENA_SHA}","cold_start_ms":${COLD_START_MS},"peak_rss_kb":${PEAK_RSS_KB},"probe_ms":$((PROBE_END_MS - PROBE_START_MS))}
+{"schema_version":1,"status":"${FINAL_STATUS}","reason":"${FINAL_REASON}","revision":"${SERENA_SHA}","cold_start_ms":${COLD_START_MS},"peak_rss_kb":${PEAK_RSS_KB},"probe_ms":$((PROBE_END_MS - PROBE_START_MS)),"deep_probe_ms":${DEEP_PROBE_MS},"deep_probe_status":"${DEEP_STATUS}"}
 EOF
 
-if [[ "$PROBE_STATUS" != "available" ]]; then
-  echo "Serena health probe reported ${PROBE_STATUS}; review continues without Serena." >&2
+if [[ "$FINAL_STATUS" != "available" ]]; then
+  echo "Serena health probe reported ${FINAL_STATUS}; review continues without Serena." >&2
 fi
 exit 0

@@ -31,7 +31,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 26
           cache: npm
 
       - run: npm ci
@@ -47,6 +47,9 @@ jobs:
 
       - name: Check dist drift
         run: npm run check-dist
+
+      - name: Probe contract test
+        run: bash opencode-review/serena/probe.test.sh
 
       - name: Check issue_number render (JS syntax guard)
         run: bash opencode-review/scripts/check-issue-number-render.sh

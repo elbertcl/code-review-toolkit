@@ -9,6 +9,8 @@ interface Finding {
   category?: string;
   message?: string;
   content?: string;
+  suggestion_code?: string;
+  existing_code?: string;
 }
 
 interface Anchor {
@@ -117,10 +119,14 @@ export function computeFindings({ findings, anchors, diffLines }: ComputeFinding
         line = snapped;
       }
     }
+    let body = `**[${sevCat}]** ${finding.message || finding.content || ""}`;
+    if (finding.suggestion_code) {
+      body += `\n\n\`\`\`suggestion\n${finding.suggestion_code}\n\`\`\``;
+    }
     return {
       path: finding.path,
       line,
-      body: `**[${sevCat}]** ${finding.message || finding.content || ""}`,
+      body,
     };
   });
 
@@ -227,7 +233,7 @@ export function buildVerdictComment({ findings, headSha, verdictMarker, headMark
     line: f.line ?? f.start_line ?? f.end_line ?? 0,
     title: (f.message || f.content || "").split(".")[0] || f.message || f.content || "",
     body: f.message || f.content || "",
-    suggested_fix: "",
+    suggested_fix: f.suggestion_code || "",
   }));
 
   const serenaLabel = serenaStatus === "available" ? "available" : "not available";

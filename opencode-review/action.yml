@@ -142,7 +142,9 @@ runs:
           const owner = context.repo.owner;
           const repo = context.repo.repo;
           const issueNumberInput = '${{ inputs.issue_number }}';
-          const issueNumber = (issueNumberInput ? Number(issueNumberInput) : null) || context.payload.issue.number;
+          const issueNumber = (issueNumberInput ? Number(issueNumberInput) : null)
+            || context.payload.pull_request?.number
+            || context.payload.issue?.number;
           const commentId = context.payload.comment ? context.payload.comment.id : null;
           const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
 
@@ -398,7 +400,8 @@ runs:
           "$PWD" \
           "$RUNNER_TEMP/changed-files.json" \
           "20" \
-          /tmp/serena-context.md || true
+          /tmp/serena-context.md \
+          "${SERENA_HOME}/bin/serena-readonly" || true
 
     # ── Review engine ──────────────────────────────────────────────────────────
     - name: Validate review secrets

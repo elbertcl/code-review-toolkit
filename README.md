@@ -305,6 +305,56 @@ rather than silently sending the key to the wrong place.
 Verify any provider/model combo against opencode's live catalog before using it —
 `curl -sf https://models.dev/api.json | jq '.<provider>'` — rather than guessing a model ID.
 
+## Auto-Review on Push (non-goal, opt-in only)
+
+The approved V1 design explicitly lists auto-review-per-commit as a **non-goal** (§3 Non-Goals: "Automatically triggering a review for every push"; §4 Key Decisions: "pushes alone do not run either model path"). The default trigger is manual: reviews are requested via `/review` issue comments only.
+
+**Rationale:** Manual trigger preserves author control over model spend, avoids noisy re-reviews on WIP force-pushes, and prevents review-spam on large multi-commit PRs where the author is still iterating.
+
+### Opt-in override for teams that choose to auto-review
+
+Teams that want auto-review-on-push can add a `pull_request` trigger to their consuming workflow. The action's PR-number resolution is already event-agnostic — it reads from `context.payload.pull_request.number` or `context.payload.issue.number` automatically:
+
+```yaml
+name: Auto PR Review
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    if: |
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       github.event.comment.body == '/review') ||
+      (github.event_name == 'pull_request' &&
+       (github.event.action == 'opened' || github.event.action == 'synchronize'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: elbertcl/code-review-toolkit/opencode-review@v4
+        with:
+          # ... existing inputs
+```
+
+**Caveat:** Auto-review on `synchronize` fires on every force-push. Use concurrency groups to cancel stale runs:
+
+```yaml
+concurrency:
+  group: review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+```
+
+This override is opt-in only — the toolkit default trigger behavior does **not** change.
+
 ## OpenCode Autofix
 
 Use `opencode-autofix` to let OpenCode apply scoped review fixes from an `/autofix`

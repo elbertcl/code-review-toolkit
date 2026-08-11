@@ -41,6 +41,7 @@ interface FetchOptions {
   serenaPath?: string;
   outputPath?: string;
   timeoutMs?: number;
+  _spawn?: typeof spawn;
 }
 
 interface FetchResult {
@@ -51,7 +52,7 @@ interface FetchResult {
 }
 
 export async function fetchSerenaContext(options: FetchOptions): Promise<FetchResult> {
-  const { projectDir, changedFiles, cap, serenaPath = "serena", outputPath, timeoutMs = 30000 } = options;
+  const { projectDir, changedFiles, cap, serenaPath = "serena", outputPath, timeoutMs = 30000, _spawn } = options;
   const { files, overflow } = enumerateTargets(changedFiles, cap);
 
   if (files.length === 0) {
@@ -61,7 +62,7 @@ export async function fetchSerenaContext(options: FetchOptions): Promise<FetchRe
   }
 
   try {
-    const child = spawn(serenaPath, ["start-mcp-server", "--project", projectDir], {
+    const child = (_spawn || spawn)(serenaPath, ["start-mcp-server", "--project", projectDir], {
       stdio: ["pipe", "pipe", "pipe"],
       timeout: timeoutMs,
     });
@@ -181,6 +182,7 @@ if (process.argv[1] && process.argv[1].endsWith("fetch-serena-context.js")) {
   const changedPath = process.argv[3];
   const cap = parseInt(process.argv[4] || "20", 10);
   const outputPath = process.argv[5];
+  const serenaPath = process.argv[6] || process.env.SERENA_BIN || "serena";
 
   if (!projectDir || !changedPath) {
     process.stderr.write("Usage: node fetch-serena-context.js <project-dir> <changed-files.json> [cap] [output.md]\n");
@@ -190,7 +192,7 @@ if (process.argv[1] && process.argv[1].endsWith("fetch-serena-context.js")) {
   const { readFileSync } = await import("node:fs");
   const changedFiles = JSON.parse(readFileSync(changedPath, "utf8")) as string[];
 
-  fetchSerenaContext({ projectDir, changedFiles, cap, outputPath }).then((result) => {
+  fetchSerenaContext({ projectDir, changedFiles, cap, outputPath, serenaPath }).then((result) => {
     process.stdout.write(result.artifact || "");
     if (result.error) {
       process.stderr.write(`Serena fetcher: ${result.error} (fail-open, continuing)\n`);
