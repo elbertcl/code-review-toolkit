@@ -48,5 +48,8 @@ jobs:
       - name: Check dist drift
         run: npm run check-dist
 
+      - name: Probe contract test
+        run: bash opencode-review/serena/probe.test.sh
+
       - name: Check issue_number render (JS syntax guard)
         run: bash opencode-review/scripts/check-issue-number-render.sh
