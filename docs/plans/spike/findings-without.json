@@ -1,0 +1,68 @@
+{
+  "status": "complete",
+  "llm": {
+    "model": "deepseek/deepseek-v4-pro"
+  },
+  "message": "Review complete: 0 finding(s) across 1 selected item(s).",
+  "summary": {
+    "files_reviewed": 1,
+    "comments": 0,
+    "total_tokens": 22913,
+    "input_tokens": 21708,
+    "output_tokens": 1205,
+    "elapsed": "50s"
+  },
+  "tool_calls": {
+    "total": 3,
+    "by_tool": {
+      "file_read": 3
+    }
+  },
+  "comments": [],
+  "session_id": "71727058-5e48-4a60-b1b6-75f25993afbc",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "71727058-5e48-4a60-b1b6-75f25993afbc",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "fb462813a781f091cdf05ce011553da936049956bed7a6ddbbc95c420967835f"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "46182416938a152840e87fc1cff1374b47eed086",
+      "requested_head": "fa0d3fa70dd497a926eee441420f4517920b23b1",
+      "resolved_base": "46182416938a152840e87fc1cff1374b47eed086",
+      "resolved_head": "fa0d3fa70dd497a926eee441420f4517920b23b1",
+      "exact_range": "46182416938a152840e87fc1cff1374b47eed086..fa0d3fa70dd497a926eee441420f4517920b23b1",
+      "source_artifact_sha256": "7cd3f08f36147ad9dc34da8ecab4be852a1ef82846062842fdd8f208a894e656"
+    },
+    "execution": {
+      "ocr_version": "v1.8.8",
+      "model": "deepseek/deepseek-v4-pro",
+      "configured_concurrency": 1,
+      "rule_config_sha256": "8f55a0c4235b5b31fc7feb587007adad9a4b64fe325464ad80c6a8d71824a192",
+      "runtime_config_sha256": "da20272f53ad7d55aacd23ebd8418c41d0cf61cac0505d0593dfe24622f61ac1"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "0b488f91a1c81069ffeb5b6d845b4f8cdf1da0db87f190c0ace3e34b7786022a",
+          "path": "internal/domain/creditmanager/service/process_spending_seller_events.go",
+          "fingerprint": "4a635cb0ff2c3c9e1ebf8d21989ea450f6513b83254f27b1071d56b739666d25"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "0b488f91a1c81069ffeb5b6d845b4f8cdf1da0db87f190c0ace3e34b7786022a",
+          "path": "internal/domain/creditmanager/service/process_spending_seller_events.go",
+          "fingerprint": "4a635cb0ff2c3c9e1ebf8d21989ea450f6513b83254f27b1071d56b739666d25"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 49948
+  }
+}
