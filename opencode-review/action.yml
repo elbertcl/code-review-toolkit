@@ -220,7 +220,7 @@ runs:
           const { data: inlineComments } = await github.rest.pulls.listReviewComments({
             owner, repo, pull_number: prNum, per_page: 100
           });
-          const severityPrefixes = /^\[(CRITICAL|HIGH|MEDIUM|LOW)\]/;
+          const severityPrefixes = /^\*\*\[(CRITICAL|HIGH|MEDIUM|LOW)/i;
           const reviewerComments = inlineComments.filter(c =>
             c.user.login === 'github-actions[bot]' &&
             severityPrefixes.test(c.body || '')
