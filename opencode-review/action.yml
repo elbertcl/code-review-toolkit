@@ -376,6 +376,11 @@ runs:
         steps.security.outputs.skip != 'true'
       shell: bash
       run: |
+        if ! command -v uvx >/dev/null 2>&1; then
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+        fi
         SERENA_HOME="$RUNNER_TEMP/serena"
         STATUS_JSON="$RUNNER_TEMP/serena-status.json"
         bash "${{ github.action_path }}/serena/install-and-probe.sh" \
@@ -684,7 +689,7 @@ runs:
 
           // Parse optional rate table for cost computation
           let rates = null;
-          const ratesInput = '\${{ inputs.ocr_cost_rates }}';
+          const ratesInput = '${{ inputs.ocr_cost_rates }}';
           if (ratesInput) {
             try { rates = JSON.parse(ratesInput); } catch { core.warning('ocr_cost_rates is not valid JSON - cost will be omitted'); }
           }
