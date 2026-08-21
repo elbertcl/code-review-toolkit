@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { parseManifest, validateManifest, mergeWithDefaults, classifyContext, } from "./lib/review-manifest.js";
 function loadValid(markdownPath) {
     return validateManifest(parseManifest(readFileSync(markdownPath, "utf8")));
@@ -29,6 +30,21 @@ export function resolveManifest(input) {
     catch (error) {
         blockers.push(`manifest defaults could not be applied: ${error.message}`);
     }
+    let defaultPolicyBody = "";
+    try {
+        if (!existsSync(join(input.workspace, manifest.policy_path))) {
+            const fallbackMd = readFileSync(input.fallbackManifestPath, "utf8");
+            const headingIdx = fallbackMd.search(/^# Review Dimensions\s*$/m);
+            if (headingIdx >= 0) {
+                const after = fallbackMd.slice(fallbackMd.indexOf("\n", headingIdx) + 1);
+                const nextH1 = after.search(/^#(?!#)[^\n]*$/m);
+                defaultPolicyBody = (nextH1 >= 0 ? after.slice(0, nextH1) : after).trim();
+            }
+        }
+    }
+    catch {
+        // defaultPolicyBody is best-effort; empty means the caller runs with empty policy
+    }
     try {
         const changedFiles = existsSync(input.changedFilesJsonPath)
             ? JSON.parse(readFileSync(input.changedFilesJsonPath, "utf8"))
@@ -41,7 +57,7 @@ export function resolveManifest(input) {
         blockers.push(`context classification failed: ${error.message}`);
     }
     const status = blockers.length > 0 ? "BLOCKED" : missingOptional.length > 0 ? "READY_WITH_GAPS" : "READY";
-    return { manifest: merged, status: { status, fallbackReason, blockers, missingOptional } };
+    return { manifest: merged, status: { status, fallbackReason, blockers, missingOptional, defaultPolicyBody } };
 }
 if (process.argv[1] && process.argv[1].endsWith("resolve-manifest.js")) {
     const args = process.argv.slice(2);
