@@ -550,6 +550,7 @@ runs:
       run: node "${{ github.action_path }}/dist/ocr/build-background.js" /tmp/open-threads.json /tmp/serena-context.md > /tmp/background.md
 
     - name: Compile review rules
+      id: ocr-rules
       if: |
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -585,13 +586,18 @@ runs:
           gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
             --body "$BODY"
+          echo "aborted_with_comment=true" >> "$GITHUB_OUTPUT"
           exit 1
         fi
         node --input-type=module -e "
-          import { compileOcrRules } from '\${{ github.action_path }}/dist/ocr/compile-ocr-rules.js';
-          import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+          import { compileOcrRules } from '${{ github.action_path }}/dist/ocr/compile-ocr-rules.js';
+          import { globMatches } from '${{ github.action_path }}/dist/context/lib/review-manifest.js';
+          import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
           const manifest = JSON.parse(readFileSync('/tmp/resolved-manifest.json', 'utf8'));
-          const policyBody = existsSync(manifest.policy_path) ? readFileSync(manifest.policy_path, 'utf8') : '';
+          let policyBody = existsSync(manifest.policy_path) ? readFileSync(manifest.policy_path, 'utf8') : '';
+          if (!policyBody) {
+            policyBody = JSON.parse(readFileSync('/tmp/manifest-status.json', 'utf8')).defaultPolicyBody || '';
+          }
           let resolvedDirectives = [];
           if (existsSync('/tmp/resolved-directives.json')) {
             resolvedDirectives = JSON.parse(readFileSync('/tmp/resolved-directives.json', 'utf8'));
@@ -607,6 +613,22 @@ runs:
             orgProfiles,
           });
           writeFileSync(process.env.RUNNER_TEMP + '/ocr-rule.json', JSON.stringify(rules, null, 2) + '\n');
+          const changed = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/changed-files.json', 'utf8'));
+          const matchedConditional = (manifest.conditional_context ?? []).filter(
+            (c) => c.when_changed.some((g) => changed.some((f) => globMatches(g, f)))
+          );
+          const matchedDirectives = (manifest.review_directives ?? []).filter(
+            (d) => d.when_changed.some((g) => changed.some((f) => globMatches(g, f)))
+          );
+          const fileSize = (p) => { try { return statSync(p).size; } catch { return 0; } };
+          writeFileSync(process.env.RUNNER_TEMP + '/context-metrics.json', JSON.stringify({
+            rules_compiled: rules.rules.length,
+            conditional_contexts_matched: matchedConditional.map((c) => c.paths.join(',')),
+            directives_applied: matchedDirectives.length,
+            rule_json_bytes: fileSize(process.env.RUNNER_TEMP + '/ocr-rule.json'),
+            background_bytes: fileSize('/tmp/background.md'),
+            serena_pointer_chars: fileSize('/tmp/serena-context.md'),
+          }, null, 2) + '\n');
         "
         FALLBACK_REASON=$(node -pe "JSON.parse(require('fs').readFileSync('/tmp/manifest-status.json','utf8')).fallbackReason || ''")
         if [ -n "${FALLBACK_REASON}" ]; then
