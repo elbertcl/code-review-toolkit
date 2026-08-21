@@ -826,11 +826,14 @@ runs:
             body: verdictBody,
           });
 
+          const ruleRe = /RULE-[A-Z]+-\d+/i;
+          const ruleCited = result.kept.filter((f) => ruleRe.test(f.message || f.content || "")).length;
           fs.writeFileSync('/tmp/ocr-result.json', JSON.stringify({
             kept: result.kept.length,
             dropped: result.dropped.length,
             resolved: result.resolved.length,
             snapped: result.snappedCount,
+            rule_cited: ruleCited,
             measurement: measurementRow,
           }));
 
@@ -846,6 +849,9 @@ runs:
         SERENA_STATUS: ${{ steps.serena.outputs.status }}
         MODE: ${{ steps.pr-info.outputs.mode }}
         ENGINE: ocr
+        REPO: ${{ github.repository }}
+        MODEL: ${{ inputs.ocr_model }}
+        ORG_PROFILES: ${{ inputs.org_profiles }}
       run: |
         mkdir -p "$RUNNER_TEMP/telemetry"
         node -e "
@@ -854,15 +860,28 @@ runs:
           try { ocrResult = JSON.parse(fs.readFileSync('/tmp/ocr-result.json', 'utf8')); } catch {}
           const measurement = ocrResult.measurement || {};
 
+          let contextBlock = {};
+          try { contextBlock = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/context-metrics.json', 'utf8')); } catch {}
+          try {
+            const ms = JSON.parse(fs.readFileSync('/tmp/manifest-status.json', 'utf8'));
+            contextBlock.manifest_status = ms.status;
+            contextBlock.fallback_reason = ms.fallbackReason || '';
+          } catch {}
+          contextBlock.rule_citation_rate = (ocrResult.rule_cited != null && (ocrResult.kept || 0) > 0)
+            ? ocrResult.rule_cited / ocrResult.kept : null;
+
           const row = {
             pr: Number(process.env.PR_NUMBER),
             run_id: process.env.RUN_ID,
             engine: process.env.ENGINE || 'ocr',
+            repo: process.env.REPO || null,
+            model: process.env.MODEL || 'deepseek/deepseek-v4-pro',
+            org_profiles: process.env.ORG_PROFILES || null,
+            context: contextBlock,
             mode: process.env.MODE || null,
             base_sha: process.env.BASE_SHA || null,
             head_sha: process.env.HEAD_SHA || null,
             serena: { status: process.env.SERENA_STATUS || 'disabled' },
-            model: 'deepseek/deepseek-v4-pro',
             timestamp: measurement.timestamp || new Date().toISOString(),
             verdict: (ocrResult.kept || 0) > 0 ? 'FAIL' : 'PASS',
             findings: {
