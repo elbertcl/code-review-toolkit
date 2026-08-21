@@ -1,0 +1,27 @@
+{
+  "title": "code-review-toolkit",
+  "description": "Per-repo, per-model AI review observability (D1 efficiency, D2 effectiveness, D3 engagement, D4 context, D5 reliability).",
+  "template_variables": [
+    { "name": "repo", "prefix": "repo:", "default": "*" },
+    { "name": "model", "prefix": "model:", "default": "*" },
+    { "name": "org_profile", "prefix": "org_profile:", "default": "*" }
+  ],
+  "widgets": [
+    { "type": "timeseries", "title": "Cost per run ($)", "requests": [{ "q": "avg:code_review_toolkit.cost.total{$repo,$model,$org_profile}" }] },
+    { "type": "timeseries", "title": "Tokens (input/output/cache)", "requests": [
+      { "q": "avg:code_review_toolkit.tokens.input{$repo,$model}" },
+      { "q": "avg:code_review_toolkit.tokens.output{$repo,$model}" },
+      { "q": "avg:code_review_toolkit.tokens.cache_read{$repo,$model}" }
+    ] },
+    { "type": "query_value", "title": "Observed precision", "requests": [{ "q": "avg:code_review_toolkit.effectiveness.precision_observed{$repo,$model}", "conditional_formats": [{ "comparator": "<", "value": 0.6, "palette": "red" }, { "comparator": ">=", "value": 0.8, "palette": "green" }] }] },
+    { "type": "query_value", "title": "Estimated recall", "requests": [{ "q": "avg:code_review_toolkit.effectiveness.recall_estimated{$repo,$model}" }] },
+    { "type": "timeseries", "title": "Rule citation rate", "requests": [{ "q": "avg:code_review_toolkit.context.rule_citation_rate{$repo,$model}" }] },
+    { "type": "timeseries", "title": "Reliability (fallback / fail-open / blocked)", "requests": [
+      { "q": "sum:code_review_toolkit.reliability.fallback{$repo}" },
+      { "q": "sum:code_review_toolkit.reliability.serena_fail_open{$repo}" },
+      { "q": "sum:code_review_toolkit.reliability.manifest_status_blocked{$repo}" }
+    ] },
+    { "type": "timeseries", "title": "Thread resolve rate", "requests": [{ "q": "avg:code_review_toolkit.engagement.thread_resolve_rate{$repo,$model}" }] },
+    { "type": "toplist", "title": "Findings by severity x outcome", "requests": [{ "q": "sum:code_review_toolkit.effectiveness.findings{$repo,$model} by {severity,outcome}" }] }
+  ]
+}

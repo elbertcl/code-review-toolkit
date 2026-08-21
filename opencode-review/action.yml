@@ -86,6 +86,13 @@ inputs:
     required: false
     default: "backend/security,backend/sre"
 
+  ocr_model:
+    description: >-
+      OCR LLM model ID passed to `ocr config set llm.model`. Per-repo choice;
+      verify IDs against the provider catalog before use.
+    required: false
+    default: "deepseek/deepseek-v4-pro"
+
   ocr_cost_rates:
     description: >-
       Optional JSON mapping model IDs to per-million-token rates.
@@ -93,6 +100,18 @@ inputs:
       When omitted, tokens and elapsed are shown but no dollar cost.
     required: false
     default: ""
+
+  metrics_datadog_api_key:
+    description: >-
+      Optional Datadog API key. When set, per-run efficiency/context/reliability
+      metrics are pushed directly from the review run (best-effort, never fails
+      the review). When empty, pushing is skipped.
+    required: false
+    default: ""
+  metrics_datadog_site:
+    description: Datadog site (e.g. datadoghq.com, us5.datadoghq.com).
+    required: false
+    default: "datadoghq.com"
 
 runs:
   using: composite
@@ -550,6 +569,7 @@ runs:
       run: node "${{ github.action_path }}/dist/ocr/build-background.js" /tmp/open-threads.json /tmp/serena-context.md > /tmp/background.md
 
     - name: Compile review rules
+      id: ocr-rules
       if: |
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
@@ -585,13 +605,18 @@ runs:
           gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
             --body "$BODY"
+          echo "aborted_with_comment=true" >> "$GITHUB_OUTPUT"
           exit 1
         fi
         node --input-type=module -e "
-          import { compileOcrRules } from '\${{ github.action_path }}/dist/ocr/compile-ocr-rules.js';
-          import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+          import { compileOcrRules } from '${{ github.action_path }}/dist/ocr/compile-ocr-rules.js';
+          import { globMatches } from '${{ github.action_path }}/dist/context/lib/review-manifest.js';
+          import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
           const manifest = JSON.parse(readFileSync('/tmp/resolved-manifest.json', 'utf8'));
-          const policyBody = existsSync(manifest.policy_path) ? readFileSync(manifest.policy_path, 'utf8') : '';
+          let policyBody = existsSync(manifest.policy_path) ? readFileSync(manifest.policy_path, 'utf8') : '';
+          if (!policyBody) {
+            policyBody = JSON.parse(readFileSync('/tmp/manifest-status.json', 'utf8')).defaultPolicyBody || '';
+          }
           let resolvedDirectives = [];
           if (existsSync('/tmp/resolved-directives.json')) {
             resolvedDirectives = JSON.parse(readFileSync('/tmp/resolved-directives.json', 'utf8'));
@@ -607,6 +632,22 @@ runs:
             orgProfiles,
           });
           writeFileSync(process.env.RUNNER_TEMP + '/ocr-rule.json', JSON.stringify(rules, null, 2) + '\n');
+          const changed = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/changed-files.json', 'utf8'));
+          const matchedConditional = (manifest.conditional_context ?? []).filter(
+            (c) => c.when_changed.some((g) => changed.some((f) => globMatches(g, f)))
+          );
+          const matchedDirectives = (manifest.review_directives ?? []).filter(
+            (d) => d.when_changed.some((g) => changed.some((f) => globMatches(g, f)))
+          );
+          const fileSize = (p) => { try { return statSync(p).size; } catch { return 0; } };
+          writeFileSync(process.env.RUNNER_TEMP + '/context-metrics.json', JSON.stringify({
+            rules_compiled: rules.rules.length,
+            conditional_contexts_matched: matchedConditional.map((c) => c.paths.join(',')),
+            directives_applied: matchedDirectives.length,
+            rule_json_bytes: fileSize(process.env.RUNNER_TEMP + '/ocr-rule.json'),
+            background_bytes: fileSize('/tmp/background.md'),
+            serena_pointer_chars: fileSize('/tmp/serena-context.md'),
+          }, null, 2) + '\n');
         "
         FALLBACK_REASON=$(node -pe "JSON.parse(require('fs').readFileSync('/tmp/manifest-status.json','utf8')).fallbackReason || ''")
         if [ -n "${FALLBACK_REASON}" ]; then
@@ -633,7 +674,7 @@ runs:
         ocr config set llm.url "${{ inputs.ocr_llm_url }}"
         ocr config set llm.auth_token "${{ inputs.ocr_llm_token }}"
         ocr config set llm.protocol openai
-        ocr config set llm.model deepseek/deepseek-v4-pro
+        ocr config set llm.model "${{ inputs.ocr_model }}"
         echo "=== Running review ==="
         ocr review --from "$BASE_SHA" --to "$HEAD_SHA" \
           --rule "$RUNNER_TEMP/ocr-rule.json" \
@@ -778,8 +819,9 @@ runs:
           const verdictBody = buildVerdictComment({
             findings: result.kept,
             headSha,
-            verdictMarker: '\${{ inputs.verdict_marker }}',
-            headMarker: '\${{ inputs.head_marker }}',
+            verdictMarker: '${{ inputs.verdict_marker }}',
+            headMarker: '${{ inputs.head_marker }}',
+            model: '${{ inputs.ocr_model }}',
             serenaStatus,
             manifestStatus,
             measurement: {
@@ -796,11 +838,14 @@ runs:
             body: verdictBody,
           });
 
+          const ruleRe = /RULE-[A-Z]+-\d+/i;
+          const ruleCited = result.kept.filter((f) => ruleRe.test(f.message || f.content || "")).length;
           fs.writeFileSync('/tmp/ocr-result.json', JSON.stringify({
             kept: result.kept.length,
             dropped: result.dropped.length,
             resolved: result.resolved.length,
             snapped: result.snappedCount,
+            rule_cited: ruleCited,
             measurement: measurementRow,
           }));
 
@@ -816,6 +861,9 @@ runs:
         SERENA_STATUS: ${{ steps.serena.outputs.status }}
         MODE: ${{ steps.pr-info.outputs.mode }}
         ENGINE: ocr
+        REPO: ${{ github.repository }}
+        MODEL: ${{ inputs.ocr_model }}
+        ORG_PROFILES: ${{ inputs.org_profiles }}
       run: |
         mkdir -p "$RUNNER_TEMP/telemetry"
         node -e "
@@ -824,15 +872,28 @@ runs:
           try { ocrResult = JSON.parse(fs.readFileSync('/tmp/ocr-result.json', 'utf8')); } catch {}
           const measurement = ocrResult.measurement || {};
 
+          let contextBlock = {};
+          try { contextBlock = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/context-metrics.json', 'utf8')); } catch {}
+          try {
+            const ms = JSON.parse(fs.readFileSync('/tmp/manifest-status.json', 'utf8'));
+            contextBlock.manifest_status = ms.status;
+            contextBlock.fallback_reason = ms.fallbackReason || '';
+          } catch {}
+          contextBlock.rule_citation_rate = (ocrResult.rule_cited != null && (ocrResult.kept || 0) > 0)
+            ? ocrResult.rule_cited / ocrResult.kept : null;
+
           const row = {
             pr: Number(process.env.PR_NUMBER),
             run_id: process.env.RUN_ID,
             engine: process.env.ENGINE || 'ocr',
+            repo: process.env.REPO || null,
+            model: process.env.MODEL || 'deepseek/deepseek-v4-pro',
+            org_profiles: process.env.ORG_PROFILES || null,
+            context: contextBlock,
             mode: process.env.MODE || null,
             base_sha: process.env.BASE_SHA || null,
             head_sha: process.env.HEAD_SHA || null,
             serena: { status: process.env.SERENA_STATUS || 'disabled' },
-            model: 'deepseek/deepseek-v4-pro',
             timestamp: measurement.timestamp || new Date().toISOString(),
             verdict: (ocrResult.kept || 0) > 0 ? 'FAIL' : 'PASS',
             findings: {
@@ -859,9 +920,17 @@ runs:
         path: ${{ runner.temp }}/telemetry/review-run.json
         if-no-files-found: ignore
 
+    - name: Push run metrics (Datadog)
+      if: always() && inputs.metrics_datadog_api_key != ''
+      shell: bash
+      env:
+        DD_API_KEY: ${{ inputs.metrics_datadog_api_key }}
+        DD_SITE: ${{ inputs.metrics_datadog_site }}
+      run: node "${{ github.action_path }}/dist/monitoring/push-run-metrics.js" "$RUNNER_TEMP/telemetry/review-run.json"
+
     # ── Post failure comment ────────────────────────────────────────────────
     - name: Post failure comment
-      if: failure() || cancelled()
+      if: (failure() || cancelled()) && steps.ocr-rules.outputs.aborted_with_comment != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

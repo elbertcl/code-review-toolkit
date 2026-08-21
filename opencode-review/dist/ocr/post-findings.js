@@ -141,7 +141,7 @@ function buildFooter(measurement) {
     }
     return `\n---\n**Run:** ${parts.join(" \u00b7 ")}`;
 }
-export function buildVerdictComment({ findings, headSha, verdictMarker, headMarker, serenaStatus, manifestFallbackReason, manifestStatus, measurement }) {
+export function buildVerdictComment({ findings, headSha, verdictMarker, headMarker, serenaStatus, manifestFallbackReason, manifestStatus, measurement, model }) {
     const criticalCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "CRITICAL").length;
     const highCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "HIGH").length;
     const mediumCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "MEDIUM").length;
@@ -160,6 +160,9 @@ export function buildVerdictComment({ findings, headSha, verdictMarker, headMark
     const reason = manifestStatus?.fallbackReason ?? manifestFallbackReason ?? "";
     const reviewMdLabel = reason ? `not loaded (${reason})` : "loaded";
     const contextLines = [`- Serena: ${serenaLabel}`, `- REVIEW.md: ${reviewMdLabel}`];
+    if (model) {
+        contextLines.push(`- Model: ${model}`);
+    }
     if (manifestStatus?.status) {
         contextLines.push(`- Context status: ${manifestStatus.status}`);
     }

@@ -61,6 +61,52 @@ function makeFixture(manifestMd: string, files: Record<string, string> = {}, cha
   return { workspace, repoManifest, fallbackManifest, defaultsJson, changedFilesJson };
 }
 
+describe("defaultPolicyBody", () => {
+  let dirs: string[] = [];
+  const cleanup = () => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); dirs = []; };
+  after(cleanup);
+
+  function fallbackWithDimensions(): string {
+    return manifestMarkdown() + "\n# Review Dimensions\n\n## Section 1: Business Correctness\n\n- **Invariant rule enforcement:** Verify every RULE-XXX-NN invariant.\n\n## Section 2: Performance\n\n- **N+1 DB calls:** Do not call the database per iteration.\n\n## Section 3: Maintainability\n\n- **Code style:** Follow the repository's established conventions.\n";
+  }
+
+  function makeFixtureWithFallbackDim(files: Record<string, string> = {}): Fixture {
+    const f = makeFixture(manifestMarkdown(), files);
+    writeFileSync(f.fallbackManifest, fallbackWithDimensions());
+    return f;
+  }
+
+  it("populates defaultPolicyBody when repo REVIEW.md is absent and policy file missing", () => {
+    const f = makeFixtureWithFallbackDim({ "AGENTS.md": "# agents" });
+    dirs.push(f.workspace);
+    const r = resolveManifest({ repoManifestPath: join(f.workspace, "MISSING.md"), fallbackManifestPath: f.fallbackManifest, defaultsJsonPath: f.defaultsJson, changedFilesJsonPath: f.changedFilesJson, workspace: f.workspace });
+    assert.ok(r.status.defaultPolicyBody.length > 0);
+    assert.match(r.status.defaultPolicyBody, /N\+1/);
+  });
+
+  it("leaves defaultPolicyBody empty when the repo policy file exists", () => {
+    const f = makeFixtureWithFallbackDim({ "AGENTS.md": "# agents", "docs/policy.md": "# policy" });
+    dirs.push(f.workspace);
+    const r = resolveManifest({ repoManifestPath: f.repoManifest, fallbackManifestPath: f.fallbackManifest, defaultsJsonPath: f.defaultsJson, changedFilesJsonPath: f.changedFilesJson, workspace: f.workspace });
+    assert.equal(r.status.defaultPolicyBody, "");
+  });
+
+  it("populates defaultPolicyBody when repo REVIEW.md exists but policy file is missing", () => {
+    const f = makeFixtureWithFallbackDim({ "AGENTS.md": "# agents" });
+    dirs.push(f.workspace);
+    const r = resolveManifest({ repoManifestPath: f.repoManifest, fallbackManifestPath: f.fallbackManifest, defaultsJsonPath: f.defaultsJson, changedFilesJsonPath: f.changedFilesJson, workspace: f.workspace });
+    assert.ok(r.status.defaultPolicyBody.length > 0);
+    assert.match(r.status.defaultPolicyBody, /Business Correctness/);
+  });
+
+  it("leaves defaultPolicyBody empty when the fallback manifest has no dimensions section", () => {
+    const f = makeFixture(manifestMarkdown(), { "AGENTS.md": "# agents" });
+    dirs.push(f.workspace);
+    const r = resolveManifest({ repoManifestPath: f.repoManifest, fallbackManifestPath: f.fallbackManifest, defaultsJsonPath: f.defaultsJson, changedFilesJsonPath: f.changedFilesJson, workspace: f.workspace });
+    assert.equal(r.status.defaultPolicyBody, "");
+  });
+});
+
 describe("resolveManifest", () => {
   let dirs: string[] = [];
   const cleanup = () => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); dirs = []; };

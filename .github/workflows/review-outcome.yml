@@ -1,0 +1,87 @@
+name: Review Outcome Metrics
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: number
+      toolkit_ref:
+        required: false
+        type: string
+        default: "v4"
+    secrets:
+      metrics_datadog_api_key:
+        required: false
+      metrics_datadog_site:
+        required: false
+
+jobs:
+  outcome:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Checkout toolkit
+        uses: actions/checkout@v4
+        with:
+          repository: elbertcl/code-review-toolkit
+          ref: ${{ inputs.toolkit_ref }}
+          path: toolkit
+
+      - name: Fetch review threads and verdict comments
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const prNumber = Number('${{ inputs.pr_number }}');
+            const threadsQuery = `
+              query($owner: String!, $repo: String!, $prNumber: Int!, $cursor: String) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $prNumber) {
+                    reviewThreads(first: 100, after: $cursor) {
+                      nodes {
+                        isResolved
+                        isOutdated
+                        comments(first: 100) {
+                          totalCount
+                          nodes { author { login } body path line createdAt }
+                        }
+                      }
+                      pageInfo { hasNextPage endCursor }
+                    }
+                  }
+                }
+              }`;
+            let threads = [];
+            let cursor = null;
+            let hasNext = true;
+            while (hasNext) {
+              const result = await github.graphql(threadsQuery, {
+                owner: context.repo.owner, repo: context.repo.repo, prNumber, cursor,
+              });
+              const rt = result.repository.pullRequest.reviewThreads;
+              threads.push(...rt.nodes);
+              hasNext = rt.pageInfo.hasNextPage;
+              cursor = rt.pageInfo.endCursor;
+            }
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, per_page: 100,
+            });
+            fs.writeFileSync('/tmp/threads.json', JSON.stringify(threads));
+            fs.writeFileSync('/tmp/comments.json', JSON.stringify(
+              comments.map((c) => ({ body: c.body, created_at: c.created_at }))
+            ));
+            core.info(`Fetched ${threads.length} threads, ${comments.length} comments`);
+
+      - name: Classify outcomes and push
+        if: always()
+        shell: bash
+        env:
+          DD_API_KEY: ${{ secrets.metrics_datadog_api_key }}
+          DD_SITE: ${{ secrets.metrics_datadog_site || 'datadoghq.com' }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node toolkit/dist/monitoring/classify-outcomes.js /tmp/threads.json /tmp/comments.json "${{ inputs.pr_number }}"

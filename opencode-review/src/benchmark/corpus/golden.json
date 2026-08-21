@@ -1,0 +1,48 @@
+{
+  "entries": [
+    {
+      "id": "invariant-violation-RULE-TRK-02",
+      "files": [
+        {
+          "path": "internal/domain/tracker/service/quick_ingest.go",
+          "content": "package service\n\nimport (\n\t\"context\"\n\n\t\"github.com/astronautsid/astro-ads-be/internal/domain/tracker/entity\"\n)\n\ntype QuickIngest struct {\n\tvalidator JourneyValidator\n\trepo      db.EventRepository\n\tpublisher inf_pubsub.Publisher\n}\n\nfunc NewQuickIngest(validator JourneyValidator, repo db.EventRepository, publisher inf_pubsub.Publisher) QuickIngest {\n\treturn QuickIngest{validator: validator, repo: repo, publisher: publisher}\n}\n\nfunc (q QuickIngest) ProcessAndPublish(ctx context.Context, event entity.Event) error {\n\tvalid := q.validator.ValidateJourney(ctx, event)\n\tif !valid {\n\t\treturn nil\n\t}\n\n\tif err := q.repo.BulkCreateEvents(ctx, []entity.Event{event}); err != nil {\n\t\treturn err\n\t}\n\n\t_, err := q.publisher.Publish(ctx, TopicEventCreated, event.ToPb())\n\treturn err\n}\n"
+        }
+      ],
+      "expected_findings": [
+        { "path": "internal/domain/tracker/service/quick_ingest.go", "line_approx": 23, "severity": "CRITICAL", "rule_id": "RULE-TRK-02" }
+      ]
+    },
+    {
+      "id": "swallowed-error",
+      "files": [
+        {
+          "path": "internal/domain/tracker/service/event_lookup.go",
+          "content": "package service\n\nimport (\n\t\"context\"\n\n\t\"github.com/astronautsid/astro-ads-be/internal/domain/tracker/entity\"\n)\n\ntype EventLookup struct {\n\trepo EventLookupRepo\n}\n\ntype EventLookupRepo interface {\n\tFindByImpressionID(ctx context.Context, impressionID string) ([]entity.Event, error)\n}\n\nfunc NewEventLookup(repo EventLookupRepo) EventLookup {\n\treturn EventLookup{repo: repo}\n}\n\nfunc (l EventLookup) FindByImpression(ctx context.Context, impressionID string) ([]entity.Event, error) {\n\tevents, err := l.repo.FindByImpressionID(ctx, impressionID)\n\tif err != nil {\n\t\treturn []entity.Event{}, nil\n\t}\n\treturn events, nil\n}\n"
+        }
+      ],
+      "expected_findings": [
+        { "path": "internal/domain/tracker/service/event_lookup.go", "line_approx": 24, "severity": "HIGH" }
+      ]
+    },
+    {
+      "id": "clean-summary",
+      "files": [
+        {
+          "path": "internal/domain/tracker/service/ingest_summary.go",
+          "content": "package service\n\nimport (\n\t\"fmt\"\n\n\t\"github.com/astronautsid/astro-ads-be/internal/domain/tracker/entity\"\n)\n\ntype IngestSummary struct {\n\tAcked   int\n\tRetried int\n}\n\nfunc SummarizeIngestResult(result IngestResult) IngestSummary {\n\treturn IngestSummary{Acked: len(result.AckEvents), Retried: len(result.RetryEvents)}\n}\n\nfunc ClassifyEvent(event entity.Event) string {\n\tif event.Detail.IsBillable {\n\t\treturn fmt.Sprintf(\"billable:%s\", event.Detail.Type)\n\t}\n\treturn fmt.Sprintf(\"non-billable:%s\", event.Detail.Type)\n}\n"
+        }
+      ],
+      "expected_findings": []
+    },
+    {
+      "id": "clean-metrics",
+      "files": [
+        {
+          "path": "internal/domain/tracker/service/const.go",
+          "content": "package service\n\nconst (\n\tmetricEventLookupDuration = \"tracker.event_lookup.duration_ms\"\n\tmetricEventLookupTotal    = \"tracker.event_lookup.total\"\n)\n"
+        }
+      ],
+      "expected_findings": []
+    }
+  ]
+}

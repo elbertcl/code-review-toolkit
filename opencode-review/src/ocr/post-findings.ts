@@ -168,6 +168,7 @@ interface BuildVerdictInput {
   manifestFallbackReason?: string;
   manifestStatus?: ManifestStatusInfo;
   measurement?: MeasurementFooter;
+  model?: string;
 }
 
 function formatTokenCount(n: number | undefined): string {
@@ -219,7 +220,7 @@ function buildFooter(measurement: MeasurementFooter): string {
   return `\n---\n**Run:** ${parts.join(" \u00b7 ")}`;
 }
 
-export function buildVerdictComment({ findings, headSha, verdictMarker, headMarker, serenaStatus, manifestFallbackReason, manifestStatus, measurement }: BuildVerdictInput): string {
+export function buildVerdictComment({ findings, headSha, verdictMarker, headMarker, serenaStatus, manifestFallbackReason, manifestStatus, measurement, model }: BuildVerdictInput): string {
   const criticalCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "CRITICAL").length;
   const highCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "HIGH").length;
   const mediumCount = findings.filter((f) => (f.severity ?? "").toUpperCase() === "MEDIUM").length;
@@ -241,6 +242,9 @@ export function buildVerdictComment({ findings, headSha, verdictMarker, headMark
   const reviewMdLabel = reason ? `not loaded (${reason})` : "loaded";
 
   const contextLines = [`- Serena: ${serenaLabel}`, `- REVIEW.md: ${reviewMdLabel}`];
+  if (model) {
+    contextLines.push(`- Model: ${model}`);
+  }
   if (manifestStatus?.status) {
     contextLines.push(`- Context status: ${manifestStatus.status}`);
   }
