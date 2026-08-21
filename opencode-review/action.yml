@@ -891,7 +891,7 @@ runs:
 
     # ── Post failure comment ────────────────────────────────────────────────
     - name: Post failure comment
-      if: failure() || cancelled()
+      if: (failure() || cancelled()) && steps.ocr-rules.outputs.aborted_with_comment != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
