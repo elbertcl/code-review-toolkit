@@ -1,0 +1,63 @@
+name: PR Review (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      org_profiles:
+        required: true
+        type: string
+        description: Comma-separated org profiles (backend/security, backend/sre, frontend/security, frontend/sre).
+      ocr_model:
+        required: false
+        type: string
+        default: "deepseek/deepseek-v4-pro"
+      ocr_cost_rates:
+        required: false
+        type: string
+        default: ""
+      fail_closed_context:
+        required: false
+        type: string
+        default: "true"
+      issue_number:
+        required: false
+        type: string
+        default: ""
+    secrets:
+      ocr_llm_url:
+        required: true
+      ocr_llm_token:
+        required: true
+      metrics_datadog_api_key:
+        required: false
+      metrics_datadog_site:
+        required: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout PR head (push and comment events)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || format('refs/pull/{0}/head', github.event.issue.number) }}
+      - name: Run review
+        uses: elbertcl/code-review-toolkit/opencode-review@v4
+        with:
+          use_github_token: true
+          org_profiles: ${{ inputs.org_profiles }}
+          ocr_model: ${{ inputs.ocr_model }}
+          ocr_cost_rates: ${{ inputs.ocr_cost_rates }}
+          fail_closed_context: ${{ inputs.fail_closed_context }}
+          issue_number: ${{ inputs.issue_number }}
+          ocr_llm_url: ${{ secrets.ocr_llm_url }}
+          ocr_llm_token: ${{ secrets.ocr_llm_token }}
+          metrics_datadog_api_key: ${{ secrets.metrics_datadog_api_key }}
+          metrics_datadog_site: ${{ secrets.metrics_datadog_site }}
