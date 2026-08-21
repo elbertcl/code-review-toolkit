@@ -86,6 +86,13 @@ inputs:
     required: false
     default: "backend/security,backend/sre"
 
+  ocr_model:
+    description: >-
+      OCR LLM model ID passed to `ocr config set llm.model`. Per-repo choice;
+      verify IDs against the provider catalog before use.
+    required: false
+    default: "deepseek/deepseek-v4-pro"
+
   ocr_cost_rates:
     description: >-
       Optional JSON mapping model IDs to per-million-token rates.
@@ -655,7 +662,7 @@ runs:
         ocr config set llm.url "${{ inputs.ocr_llm_url }}"
         ocr config set llm.auth_token "${{ inputs.ocr_llm_token }}"
         ocr config set llm.protocol openai
-        ocr config set llm.model deepseek/deepseek-v4-pro
+        ocr config set llm.model "${{ inputs.ocr_model }}"
         echo "=== Running review ==="
         ocr review --from "$BASE_SHA" --to "$HEAD_SHA" \
           --rule "$RUNNER_TEMP/ocr-rule.json" \
@@ -800,8 +807,9 @@ runs:
           const verdictBody = buildVerdictComment({
             findings: result.kept,
             headSha,
-            verdictMarker: '\${{ inputs.verdict_marker }}',
-            headMarker: '\${{ inputs.head_marker }}',
+            verdictMarker: '${{ inputs.verdict_marker }}',
+            headMarker: '${{ inputs.head_marker }}',
+            model: '${{ inputs.ocr_model }}',
             serenaStatus,
             manifestStatus,
             measurement: {

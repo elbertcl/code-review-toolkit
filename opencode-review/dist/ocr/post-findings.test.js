@@ -319,4 +319,25 @@ describe("buildVerdictComment suggestion_code", () => {
         assert.match(body, /"suggested_fix": ""/);
     });
 });
+describe("buildVerdictComment model line", () => {
+    it("includes the model in context lines when provided", () => {
+        const body = buildVerdictComment({
+            findings: [],
+            headSha: "abc123def4567890",
+            verdictMarker: "<!-- verdict -->",
+            headMarker: "<!-- head:",
+            model: "openrouter/qwen-3-coder",
+        });
+        assert.match(body, /- Model: openrouter\/qwen-3-coder/);
+    });
+    it("omits the model line when not provided", () => {
+        const body = buildVerdictComment({
+            findings: [],
+            headSha: "abc123def4567890",
+            verdictMarker: "<!-- verdict -->",
+            headMarker: "<!-- head:",
+        });
+        assert.doesNotMatch(body, /- Model:/);
+    });
+});
 //# sourceMappingURL=post-findings.test.js.map
