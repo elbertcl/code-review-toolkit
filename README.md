@@ -4,15 +4,43 @@ AI-powered PR review infrastructure for astronautsid repos.
 
 ## Usage
 
-One action, one command:
+**Default trigger: review on every push + `/review` comment**, via one reusable workflow:
 
 ```yaml
-- uses: elbertcl/code-review-toolkit/review@v1
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: |
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       github.event.comment.body == '/review') ||
+      (github.event_name == 'pull_request')
+    uses: elbertcl/code-review-toolkit/.github/workflows/pr-review.yml@v4
+    with:
+      org_profiles: backend/security,backend/sre
+    secrets:
+      ocr_llm_url: ${{ secrets.OCR_POC_LLM_URL }}
+      ocr_llm_token: ${{ secrets.OCR_POC_LLM_TOKEN }}
+      metrics_datadog_api_key: ${{ secrets.DATADOG_API_KEY }}
 ```
 
-Comment `/review` on any PR. The action automatically detects:
+The action automatically detects:
 - **First-time review** — full review of the entire PR diff
 - **Re-review** — classifies prior threads as resolved/still-open, then reviews only the new diff since the last review
+- **Drafts are skipped**; the same HEAD is never reviewed twice (loop guard); force-push noise is bounded by the `concurrency` cancel group
+
+**Manual-only alternative:** copy the slim `issue_comment`-only trigger and call the composite action directly (`elbertcl/code-review-toolkit/opencode-review@v4`) as before.
 
 ## Setup (per consuming repo)
 
@@ -96,6 +124,33 @@ Consumer setup is a thin workflow that only passes the flag:
     ocr_llm_url: ${{ secrets.OCR_POC_LLM_URL }}
     ocr_llm_token: ${{ secrets.OCR_POC_LLM_TOKEN }}
 ```
+
+**Per-repo model choice:** pass `ocr_model` (default `deepseek/deepseek-v4-pro`). Verify IDs
+against the provider catalog (`curl -sf https://models.dev/api.json | jq '.<provider>'`).
+
+**Observability (opt-in):** set `metrics_datadog_api_key` (+ `metrics_datadog_site`) to push
+per-run efficiency/context/reliability metrics (D1/D4/D5) at review time — best-effort, never
+fails the review. Add the PR-closed outcome workflow to also collect quality metrics (D2/D3):
+
+```yaml
+name: Review Outcome
+on:
+  pull_request:
+    types: [closed]
+jobs:
+  outcome:
+    uses: elbertcl/code-review-toolkit/.github/workflows/review-outcome.yml@v4
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+    secrets:
+      metrics_datadog_api_key: ${{ secrets.DATADOG_API_KEY }}
+```
+
+All metrics land in the shared `code-review-toolkit` Datadog dashboard
+(`docs/dashboard/datadog-code-review-toolkit.json`), sliced by `repo` and `model` tags:
+cost/tokens/elapsed, observed precision & estimated recall (from thread outcomes at PR
+close), rule-citation rate, context sizes, and reliability counters (fallback, Serena
+fail-open, BLOCKED).
 
 **OCR thread awareness — what it does and its ceiling:** OCR uses `--background-file` to carry
 a budgeted (~8KB) reasoning digest that includes:
@@ -305,55 +360,14 @@ rather than silently sending the key to the wrong place.
 Verify any provider/model combo against opencode's live catalog before using it —
 `curl -sf https://models.dev/api.json | jq '.<provider>'` — rather than guessing a model ID.
 
-## Auto-Review on Push (non-goal, opt-in only)
+## Review triggers (default: always-on-push)
 
-The approved V1 design explicitly lists auto-review-per-commit as a **non-goal** (§3 Non-Goals: "Automatically triggering a review for every push"; §4 Key Decisions: "pushes alone do not run either model path"). The default trigger is manual: reviews are requested via `/review` issue comments only.
+Since 2026-08 the default trigger is auto-review on PR open/synchronize plus the `/review`
+comment (see Usage). This replaces the earlier manual-only default. Spend control comes
+from the concurrency cancel group and the same-HEAD loop guard; authors avoid mid-iteration
+reviews by keeping the PR draft (drafts are skipped).
 
-**Rationale:** Manual trigger preserves author control over model spend, avoids noisy re-reviews on WIP force-pushes, and prevents review-spam on large multi-commit PRs where the author is still iterating.
-
-### Opt-in override for teams that choose to auto-review
-
-Teams that want auto-review-on-push can add a `pull_request` trigger to their consuming workflow. The action's PR-number resolution is already event-agnostic — it reads from `context.payload.pull_request.number` or `context.payload.issue.number` automatically:
-
-```yaml
-name: Auto PR Review
-
-on:
-  issue_comment:
-    types: [created]
-  pull_request:
-    types: [opened, synchronize]
-
-jobs:
-  review:
-    if: |
-      (github.event_name == 'issue_comment' &&
-       github.event.issue.pull_request != null &&
-       github.event.comment.body == '/review') ||
-      (github.event_name == 'pull_request' &&
-       (github.event.action == 'opened' || github.event.action == 'synchronize'))
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: elbertcl/code-review-toolkit/opencode-review@v4
-        with:
-          # ... existing inputs
-```
-
-**Caveat:** Auto-review on `synchronize` fires on every force-push. Use concurrency groups to cancel stale runs:
-
-```yaml
-concurrency:
-  group: review-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
-```
-
-This override is opt-in only — the toolkit default trigger behavior does **not** change.
+Manual-only repos: use the slim `issue_comment` workflow documented in Usage.
 
 ## OpenCode Autofix
 
@@ -465,6 +479,24 @@ the PR branch, gates run, and a failure force-restores the PR head — the branc
 staging the wrapper's work on a scratch branch and fast-forwarding only when gates pass;
 it depends on the wrapper honoring the checked-out branch, so validate that on your runner
 before switching.
+
+## Model benchmarking
+
+`opencode-review/src/benchmark/` ships a deterministic offline harness:
+
+```bash
+npm run build
+OCR_LLM_URL=... OCR_LLM_TOKEN=... node opencode-review/dist/benchmark/run-matrix.js \
+  opencode-review/src/benchmark/corpus/golden.json \
+  --models=deepseek/deepseek-v4-pro,openrouter/qwen-3-coder --repeats=3 \
+  --out=docs/plans/$(date +%F)-model-benchmark-results.md
+```
+
+It replays the golden corpus (self-contained file sets with expected findings) through the
+OCR CLI per model x repeat, scoring anchor-window precision/recall (±5 lines), severity
+match, and rule-citation rate. Per-cell failures are recorded as `ERROR` and the matrix
+continues. Extend the corpus by adding entries (auto-mine candidates from PR-close outcome
+data) to `corpus/golden.json`.
 
 ## Versioning
 
