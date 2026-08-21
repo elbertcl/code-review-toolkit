@@ -101,6 +101,18 @@ inputs:
     required: false
     default: ""
 
+  metrics_datadog_api_key:
+    description: >-
+      Optional Datadog API key. When set, per-run efficiency/context/reliability
+      metrics are pushed directly from the review run (best-effort, never fails
+      the review). When empty, pushing is skipped.
+    required: false
+    default: ""
+  metrics_datadog_site:
+    description: Datadog site (e.g. datadoghq.com, us5.datadoghq.com).
+    required: false
+    default: "datadoghq.com"
+
 runs:
   using: composite
   steps:
@@ -907,6 +919,14 @@ runs:
         name: review-telemetry-${{ github.run_id }}
         path: ${{ runner.temp }}/telemetry/review-run.json
         if-no-files-found: ignore
+
+    - name: Push run metrics (Datadog)
+      if: always() && inputs.metrics_datadog_api_key != ''
+      shell: bash
+      env:
+        DD_API_KEY: ${{ inputs.metrics_datadog_api_key }}
+        DD_SITE: ${{ inputs.metrics_datadog_site }}
+      run: node "${{ github.action_path }}/dist/monitoring/push-run-metrics.js" "$RUNNER_TEMP/telemetry/review-run.json"
 
     # ── Post failure comment ────────────────────────────────────────────────
     - name: Post failure comment
