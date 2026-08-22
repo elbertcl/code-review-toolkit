@@ -230,7 +230,7 @@ runs:
         script: |
           const owner    = context.repo.owner;
           const repo     = context.repo.repo;
-          const prNum    = context.payload.issue.number;
+          const prNum    = context.payload.pull_request?.number || context.payload.issue?.number;
           const verdictMarker = '${{ inputs.verdict_marker }}';
           const headMarker = '${{ inputs.head_marker }}';
 
@@ -330,7 +330,7 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         HEAD_SHA="${{ steps.pr-info.outputs.head_sha }}"
-        PR_NUMBER="${{ inputs.issue_number || github.event.issue.number }}"
+        PR_NUMBER="${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}"
         REPO="${{ github.repository }}"
 
         # Check if a *complete* OpenCode review cycle already exists for this HEAD.
@@ -365,7 +365,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+        PR_NUMBER: ${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}
         REPO: ${{ github.repository }}
       run: |
         BASE_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.base.sha')
@@ -441,7 +441,7 @@ runs:
       run: |
         if [ -z "${{ inputs.ocr_llm_url }}" ] || [ -z "${{ inputs.ocr_llm_token }}" ]; then
           echo "::error::LLM endpoint URL and auth token are required."
-          gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
+          gh pr comment "${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
             --body "**Review aborted:** missing LLM configuration."
           exit 1
@@ -456,7 +456,7 @@ runs:
         steps.security.outputs.skip != 'true'
       uses: actions/github-script@v8
       env:
-        PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+        PR_NUMBER: ${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}
       with:
         github-token: ${{ github.token }}
         script: |
@@ -585,7 +585,7 @@ runs:
         ORG_PROFILES_INPUT="${{ inputs.org_profiles }}"
         if [ -z "${ORG_PROFILES_INPUT}" ]; then
           echo "::error::org_profiles is required. Valid values: backend/security, backend/sre, frontend/security, frontend/sre."
-          gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
+          gh pr comment "${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
             --body "**Review aborted:** missing required org_profiles input."
           exit 1
@@ -602,7 +602,7 @@ runs:
         STATUS=$(node -pe "JSON.parse(require('fs').readFileSync('/tmp/manifest-status.json','utf8')).status")
         if [ "$STATUS" = "BLOCKED" ] && [ "${FAIL_CLOSED_CONTEXT}" = "true" ]; then
           BODY=$(node -e "const s=JSON.parse(require('fs').readFileSync('/tmp/manifest-status.json','utf8'));process.stdout.write('**Review aborted:** required review context is missing or invalid. Fix these and re-run \`/review-ocr\`:\n\n'+s.blockers.map(b=>'- '+b).join('\n'))")
-          gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
+          gh pr comment "${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
             --body "$BODY"
           echo "aborted_with_comment=true" >> "$GITHUB_OUTPUT"
@@ -652,7 +652,7 @@ runs:
         FALLBACK_REASON=$(node -pe "JSON.parse(require('fs').readFileSync('/tmp/manifest-status.json','utf8')).fallbackReason || ''")
         if [ -n "${FALLBACK_REASON}" ]; then
           SERENA="${SERENA_STATUS:-unavailable}"
-          gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
+          gh pr comment "${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
             --body "⚠️ **Review ran with ORG-DEFAULT rules only.** Serena: ${SERENA}. Your repo \`REVIEW.md\` was not applied: ${FALLBACK_REASON}. Repo-specific rules (conditional invariants, testspecs, review_directives) did **not** apply this run. Fix \`REVIEW.md\` to restore them."
         fi
@@ -690,7 +690,7 @@ runs:
       uses: actions/github-script@v8
       env:
         HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
-        PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+        PR_NUMBER: ${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}
         SERENA_STATUS: ${{ steps.serena.outputs.status }}
       with:
         github-token: ${{ github.token }}
@@ -854,7 +854,7 @@ runs:
       if: always()
       shell: bash
       env:
-        PR_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+        PR_NUMBER: ${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}
         RUN_ID: ${{ github.run_id }}
         BASE_SHA: ${{ steps.context.outputs.base_sha }}
         HEAD_SHA: ${{ steps.context.outputs.head_sha }}
@@ -937,7 +937,7 @@ runs:
       run: |
         echo "::group::Post failure comment"
         for i in $(seq 3); do
-          if gh pr comment "${{ inputs.issue_number || github.event.issue.number }}" \
+          if gh pr comment "${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
             --body "**Review failed unexpectedly.** Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."; then
             echo "Failure comment posted"
