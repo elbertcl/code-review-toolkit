@@ -3,7 +3,10 @@ import { computeObservedPrecision, computeEstimatedRecall, } from "./precision-r
 import { pushToDatadog } from "./push-datadog.js";
 const SEVERITY_RE = /^\*\*\[(CRITICAL|HIGH|MEDIUM|LOW)/i;
 const ANCHOR_WINDOW = 5;
-const isBot = (c) => (c.author?.login ?? "").endsWith("[bot]");
+const isBot = (c) => {
+    const login = c.author?.login ?? "";
+    return login.endsWith("[bot]") || login === "github-actions" || login === "actions-user";
+};
 export function classifyThreads(threads) {
     const botAnchors = [];
     const classifications = [];
