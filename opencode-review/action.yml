@@ -309,6 +309,12 @@ runs:
       with:
         github-token: ${{ github.token }}
         script: |
+          // On pull_request events there is no comment — the push itself is the trigger.
+          // Treat it as authorized (the pusher already has write access to the branch).
+          if (!context.payload.comment) {
+            core.setOutput('skip', 'false');
+            return;
+          }
           const commenterLogin = context.payload.comment.user.login;
           const authorAssoc    = context.payload.comment.author_association;
           const prAuthor       = '${{ steps.pr-info.outputs.pr_author }}';
