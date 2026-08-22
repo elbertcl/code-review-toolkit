@@ -84,4 +84,4 @@ jobs:
           DD_API_KEY: ${{ secrets.metrics_datadog_api_key }}
           DD_SITE: ${{ secrets.metrics_datadog_site || 'datadoghq.com' }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: node toolkit/dist/monitoring/classify-outcomes.js /tmp/threads.json /tmp/comments.json "${{ inputs.pr_number }}"
+        run: node toolkit/opencode-review/dist/monitoring/classify-outcomes.js /tmp/threads.json /tmp/comments.json "${{ inputs.pr_number }}"
