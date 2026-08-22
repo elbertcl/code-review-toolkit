@@ -33,3 +33,7 @@ node_modules/
 # Editor/IDE
 # .idea/
 # .vscode/
+.serena/
+AGENTS.md
+docs/.DS_Store
+docs/opencode-review-pipeline.html
