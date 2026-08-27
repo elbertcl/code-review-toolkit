@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { validateManifest, selectDirectives, mergeWithDefaults } from "./review-manifest.js";
+import { validateManifest, selectDirectives, mergeWithDefaults, resolveOrgProfiles } from "./review-manifest.js";
 const BASE_MANIFEST = {
     schema_version: 1,
     policy_path: "docs/policy.md",
@@ -91,6 +91,77 @@ describe("validateManifest schema_version", () => {
             };
             assert.throws(() => validateManifest(manifest), /review_directives.directive must be a non-empty string/);
         });
+    });
+});
+describe("validateManifest engine (schema v3)", () => {
+    it("validates schema_version 3 manifest without engine", () => {
+        validateManifest({ ...BASE_MANIFEST, schema_version: 3 });
+    });
+    it("accepts schema_version 3 with a full engine block", () => {
+        const manifest = {
+            ...BASE_MANIFEST,
+            schema_version: 3,
+            engine: {
+                ocr_model: "deepseek/deepseek-v4-pro",
+                ocr_cost_rates: { "deepseek/deepseek-v4-pro": { input_per_million: 0.14 } },
+                serena: true,
+                org_profiles_add: ["backend/security"],
+            },
+        };
+        validateManifest(manifest);
+    });
+    it("rejects engine on schema_version 2", () => {
+        const manifest = { ...BASE_MANIFEST, schema_version: 2, engine: { ocr_model: "x" } };
+        assert.throws(() => validateManifest(manifest), /engine requires schema_version 3/);
+    });
+    it("rejects unknown engine keys", () => {
+        const manifest = { ...BASE_MANIFEST, schema_version: 3, engine: { ocr_llm_url: "https://x" } };
+        assert.throws(() => validateManifest(manifest), /engine contains unknown key ocr_llm_url/);
+    });
+    it("rejects empty ocr_model", () => {
+        const manifest = { ...BASE_MANIFEST, schema_version: 3, engine: { ocr_model: "  " } };
+        assert.throws(() => validateManifest(manifest), /engine.ocr_model must be a non-empty string/);
+    });
+    it("rejects non-object ocr_cost_rates", () => {
+        const manifest = { ...BASE_MANIFEST, schema_version: 3, engine: { ocr_cost_rates: "cheap" } };
+        assert.throws(() => validateManifest(manifest), /engine.ocr_cost_rates must be a non-empty object/);
+    });
+    it("rejects non-boolean serena", () => {
+        const manifest = { ...BASE_MANIFEST, schema_version: 3, engine: { serena: "yes" } };
+        assert.throws(() => validateManifest(manifest), /engine.serena must be a boolean/);
+    });
+    it("rejects org_profiles_add outside the allowlist", () => {
+        const manifest = { ...BASE_MANIFEST, schema_version: 3, engine: { org_profiles_add: ["evil/profile"] } };
+        assert.throws(() => validateManifest(manifest), /outside the allowlist/);
+    });
+    it("rejects empty org_profiles_add array", () => {
+        const manifest = { ...BASE_MANIFEST, schema_version: 3, engine: { org_profiles_add: [] } };
+        assert.throws(() => validateManifest(manifest), /org_profiles_add must be a non-empty array/);
+    });
+});
+describe("resolveOrgProfiles", () => {
+    const DEFAULTS = {
+        locked: { org_profiles_baseline: ["backend/security"] },
+        bounded: {},
+    };
+    it("unions baseline, workflow input, and repo additions (deduped)", () => {
+        const manifest = {
+            ...BASE_MANIFEST,
+            schema_version: 3,
+            engine: { org_profiles_add: ["backend/sre", "backend/security"] },
+        };
+        const profiles = resolveOrgProfiles(manifest, DEFAULTS, "backend/sre, frontend/security");
+        assert.deepStrictEqual(profiles, ["backend/security", "backend/sre", "frontend/security"]);
+    });
+    it("returns workflow input alone when no baseline or engine additions", () => {
+        const manifest = { ...BASE_MANIFEST };
+        const profiles = resolveOrgProfiles(manifest, null, "backend/security, backend/sre");
+        assert.deepStrictEqual(profiles, ["backend/security", "backend/sre"]);
+    });
+    it("preserves baseline even when workflow input is empty", () => {
+        const manifest = { ...BASE_MANIFEST };
+        const profiles = resolveOrgProfiles(manifest, DEFAULTS, "");
+        assert.deepStrictEqual(profiles, ["backend/security"]);
     });
 });
 describe("selectDirectives", () => {

@@ -88,30 +88,42 @@ inputs:
 
   ocr_model:
     description: >-
-      OCR LLM model ID passed to `ocr config set llm.model`. Per-repo choice;
-      verify IDs against the provider catalog before use.
+      OCR LLM model ID passed to `ocr config set llm.model`. Empty = resolve from
+      the repo REVIEW.md `engine` block, then org variable OCR_LLM_MODEL, then the
+      built-in default.
     required: false
-    default: "deepseek/deepseek-v4-pro"
+    default: ""
 
   ocr_cost_rates:
     description: >-
       Optional JSON mapping model IDs to per-million-token rates.
       Example: {"deepseek/deepseek-v4-pro":{"input_per_million":0.14,"output_per_million":0.28,"cache_read_per_million":0.014}}
-      When omitted, tokens and elapsed are shown but no dollar cost.
+      When omitted, tokens and elapsed are shown but no dollar cost. Empty = fall back
+      to the REVIEW.md `engine.ocr_cost_rates` block when present.
     required: false
     default: ""
 
-  metrics_datadog_api_key:
+  ocr_version:
     description: >-
-      Optional Datadog API key. When set, per-run efficiency/context/reliability
-      metrics are pushed directly from the review run (best-effort, never fails
-      the review). When empty, pushing is skipped.
+      Version of @alibaba-group/open-code-review to install (also the CLI cache key).
+    required: false
+    default: "1.8.9"
+
+  metrics_otlp_endpoint:
+    description: >-
+      OTLP/HTTP metrics endpoint, full URL including /v1/metrics.
+      Defaults to the self-owned astronauts dev collector.
+    required: false
+    default: "https://otlp-dev.astronauts.id/v1/metrics"
+
+  metrics_otlp_auth:
+    description: >-
+      Raw Authorization header value for the OTLP endpoint (e.g. "Bearer <token>").
+      When set, per-run efficiency/context/reliability metrics are pushed directly
+      from the review run (best-effort, never fails the review). When empty, the
+      push is skipped.
     required: false
     default: ""
-  metrics_datadog_site:
-    description: Datadog site (e.g. datadoghq.com, us5.datadoghq.com).
-    required: false
-    default: "datadoghq.com"
 
 runs:
   using: composite
@@ -382,9 +394,81 @@ runs:
         echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
         echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
+    # ── Resolve review manifest + engine config (runs before Serena so the
+    #    REVIEW.md `engine` block can gate Serena and model selection) ────────
+    - name: Resolve review manifest
+      id: manifest
+      if: |
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        FAIL_CLOSED_CONTEXT: ${{ inputs.fail_closed_context }}
+        ORG_PROFILES_INPUT: ${{ inputs.org_profiles }}
+        OCR_MODEL_INPUT: ${{ inputs.ocr_model }}
+        OCR_RATES_INPUT: ${{ inputs.ocr_cost_rates }}
+        SERENA_INPUT: ${{ inputs.serena }}
+        ORG_MODEL_VAR: ${{ vars.OCR_LLM_MODEL }}
+        PR_NUMBER: ${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}
+      run: |
+        if [ -z "${ORG_PROFILES_INPUT}" ]; then
+          echo "::error::org_profiles is required. Valid values: backend/security, backend/sre, frontend/security, frontend/sre."
+          gh pr comment "${PR_NUMBER}" \
+            --repo "${{ github.repository }}" \
+            --body "**Review aborted:** missing required org_profiles input."
+          exit 1
+        fi
+        node "${{ github.action_path }}/dist/context/resolve-manifest.js" \
+          "REVIEW.md" \
+          "${{ github.action_path }}/context/defaults/REVIEW.md" \
+          "${{ github.action_path }}/context/defaults/manifest-defaults.json" \
+          "${RUNNER_TEMP}/changed-files.json" \
+          "$PWD" \
+          "/tmp/resolved-manifest.json" \
+          "/tmp/manifest-status.json"
+        STATUS=$(node -pe "JSON.parse(require('fs').readFileSync('/tmp/manifest-status.json','utf8')).status")
+        if [ "$STATUS" = "BLOCKED" ] && [ "$FAIL_CLOSED_CONTEXT" = "true" ]; then
+          BODY=$(node -e "const s=JSON.parse(require('fs').readFileSync('/tmp/manifest-status.json','utf8'));process.stdout.write('**Review aborted:** required review context is missing or invalid. Fix these and re-run \`/review-ocr\`:\n\n'+s.blockers.map(b=>'- '+b).join('\n'))")
+          gh pr comment "${PR_NUMBER}" \
+            --repo "${{ github.repository }}" \
+            --body "$BODY"
+          echo "aborted_with_comment=true" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+
+        # ── Engine config (precedence: workflow input > REVIEW.md engine > org var > default) ──
+        node --input-type=module -e "
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const manifest = JSON.parse(readFileSync('/tmp/resolved-manifest.json', 'utf8'));
+          const engine = manifest.engine ?? {};
+          const env = {};
+          const model = process.env.OCR_MODEL_INPUT || engine.ocr_model || process.env.ORG_MODEL_VAR || 'deepseek/deepseek-v4-pro';
+          env.OCR_MODEL_EFFECTIVE = model;
+          const rates = process.env.OCR_RATES_INPUT || (engine.ocr_cost_rates ? JSON.stringify(engine.ocr_cost_rates) : '');
+          if (rates) env.OCR_RATES_EFFECTIVE = rates;
+          for (const [k, v] of Object.entries(env)) {
+            if (String(v).includes('\n')) throw new Error(k + ' contains newlines');
+            appendFileSync(process.env.GITHUB_ENV, k + '=' + v + '\n');
+          }
+          console.log('engine resolved: model=' + model + ' rates=' + (rates ? 'set' : 'none'));
+        "
+        # Serena gating: input off OR engine off disables; engine cannot force-enable past an off input.
+        SERENA_ENABLED=true
+        [ "${SERENA_INPUT}" != "true" ] && SERENA_ENABLED=false
+        if node -pe "JSON.parse(require('fs').readFileSync('/tmp/resolved-manifest.json','utf8')).engine?.serena === false" | grep -q true; then
+          SERENA_ENABLED=false
+        fi
+        echo "serena_enabled=${SERENA_ENABLED}" >> "$GITHUB_OUTPUT"
+        echo "manifest: ${STATUS} — model=${OCR_MODEL_EFFECTIVE:-<unresolved>} serena=${SERENA_ENABLED}"
+
     # ── Serena cache ───────────────────────────────────────────────────────
     - name: Cache Serena uvx
-      if: inputs.serena == 'true'
+      if: |
+        steps.manifest.outputs.serena_enabled == 'true' ||
+        (inputs.skip_context == 'true' && inputs.serena == 'true')
       uses: actions/cache@v4
       with:
         path: ${{ runner.temp }}/serena/cache
@@ -394,7 +478,8 @@ runs:
     - name: Set up Serena
       id: serena
       if: |
-        inputs.serena == 'true' &&
+        (steps.manifest.outputs.serena_enabled == 'true' ||
+         (inputs.skip_context == 'true' && inputs.serena == 'true')) &&
         steps.pr-info.outputs.skip == 'false' &&
         steps.preflight.outputs.skip != 'true' &&
         steps.loop_guard.outputs.skip != 'true' &&
@@ -586,37 +671,10 @@ runs:
         GH_TOKEN: ${{ github.token }}
         SERENA_STATUS: ${{ steps.serena.outputs.status }}
         ORG_PROFILES_INPUT: ${{ inputs.org_profiles }}
-        FAIL_CLOSED_CONTEXT: ${{ inputs.fail_closed_context }}
       run: |
-        ORG_PROFILES_INPUT="${{ inputs.org_profiles }}"
-        if [ -z "${ORG_PROFILES_INPUT}" ]; then
-          echo "::error::org_profiles is required. Valid values: backend/security, backend/sre, frontend/security, frontend/sre."
-          gh pr comment "${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}" \
-            --repo "${{ github.repository }}" \
-            --body "**Review aborted:** missing required org_profiles input."
-          exit 1
-        fi
-        export ORG_PROFILES_INPUT
-        node "${{ github.action_path }}/dist/context/resolve-manifest.js" \
-          "REVIEW.md" \
-          "${{ github.action_path }}/context/defaults/REVIEW.md" \
-          "${{ github.action_path }}/context/defaults/manifest-defaults.json" \
-          "${RUNNER_TEMP}/changed-files.json" \
-          "$PWD" \
-          "/tmp/resolved-manifest.json" \
-          "/tmp/manifest-status.json"
-        STATUS=$(node -pe "JSON.parse(require('fs').readFileSync('/tmp/manifest-status.json','utf8')).status")
-        if [ "$STATUS" = "BLOCKED" ] && [ "${FAIL_CLOSED_CONTEXT}" = "true" ]; then
-          BODY=$(node -e "const s=JSON.parse(require('fs').readFileSync('/tmp/manifest-status.json','utf8'));process.stdout.write('**Review aborted:** required review context is missing or invalid. Fix these and re-run \`/review-ocr\`:\n\n'+s.blockers.map(b=>'- '+b).join('\n'))")
-          gh pr comment "${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}" \
-            --repo "${{ github.repository }}" \
-            --body "$BODY"
-          echo "aborted_with_comment=true" >> "$GITHUB_OUTPUT"
-          exit 1
-        fi
         node --input-type=module -e "
           import { compileOcrRules } from '${{ github.action_path }}/dist/ocr/compile-ocr-rules.js';
-          import { globMatches } from '${{ github.action_path }}/dist/context/lib/review-manifest.js';
+          import { globMatches, resolveOrgProfiles } from '${{ github.action_path }}/dist/context/lib/review-manifest.js';
           import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
           const manifest = JSON.parse(readFileSync('/tmp/resolved-manifest.json', 'utf8'));
           let policyBody = existsSync(manifest.policy_path) ? readFileSync(manifest.policy_path, 'utf8') : '';
@@ -627,18 +685,20 @@ runs:
           if (existsSync('/tmp/resolved-directives.json')) {
             resolvedDirectives = JSON.parse(readFileSync('/tmp/resolved-directives.json', 'utf8'));
           }
-          const orgProfiles = process.env.ORG_PROFILES_INPUT.split(',').map(p => p.trim()).filter(Boolean);
+          const defaults = JSON.parse(readFileSync('${{ github.action_path }}/context/defaults/manifest-defaults.json', 'utf8'));
+          const orgProfiles = resolveOrgProfiles(manifest, defaults, process.env.ORG_PROFILES_INPUT || '');
           const rules = compileOcrRules({
             workspace: process.cwd(),
             changedFiles: [],
-            orgContextsDir: '\${{ github.action_path }}/context/contexts',
+            orgContextsDir: '${{ github.action_path }}/context/contexts',
             manifest,
             policyBody,
             resolvedDirectives,
             orgProfiles,
           });
           writeFileSync(process.env.RUNNER_TEMP + '/ocr-rule.json', JSON.stringify(rules, null, 2) + '\n');
-          const changed = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/changed-files.json', 'utf8'));
+          const changedPath = process.env.RUNNER_TEMP + '/changed-files.json';
+          const changed = existsSync(changedPath) ? JSON.parse(readFileSync(changedPath, 'utf8')) : [];
           const matchedConditional = (manifest.conditional_context ?? []).filter(
             (c) => c.when_changed.some((g) => changed.some((f) => globMatches(g, f)))
           );
@@ -648,6 +708,7 @@ runs:
           const fileSize = (p) => { try { return statSync(p).size; } catch { return 0; } };
           writeFileSync(process.env.RUNNER_TEMP + '/context-metrics.json', JSON.stringify({
             rules_compiled: rules.rules.length,
+            org_profiles_effective: orgProfiles,
             conditional_contexts_matched: matchedConditional.map((c) => c.paths.join(',')),
             directives_applied: matchedDirectives.length,
             rule_json_bytes: fileSize(process.env.RUNNER_TEMP + '/ocr-rule.json'),
@@ -660,8 +721,23 @@ runs:
           SERENA="${SERENA_STATUS:-unavailable}"
           gh pr comment "${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
-            --body "⚠️ **Review ran with ORG-DEFAULT rules only.** Serena: ${SERENA}. Your repo \`REVIEW.md\` was not applied: ${FALLBACK_REASON}. Repo-specific rules (conditional invariants, testspecs, review_directives) did **not** apply this run. Fix \`REVIEW.md\` to restore them."
+            --body "⚠️ **Review ran with ORG-DEFAULT rules only.** Serena: ${SERENA}. Your repo \`REVIEW.md\` was not applied: ${FALLBACK_REASON}. Repo-specific rules (conditional invariants, testspecs, review_directives, engine) did **not** apply this run. Fix \`REVIEW.md\` to restore them."
         fi
+
+    # ── ocr CLI cache ──────────────────────────────────────────────────────
+    - name: Cache ocr CLI
+      if: |
+        steps.pr-info.outputs.skip == 'false' &&
+        steps.preflight.outputs.skip != 'true' &&
+        steps.loop_guard.outputs.skip != 'true' &&
+        steps.security.outputs.skip != 'true'
+      id: ocr-cache
+      uses: actions/cache@v4
+      with:
+        path: /usr/local/lib/node_modules/@alibaba-group
+        key: ocr-cli-${{ inputs.ocr_version }}-${{ runner.os }}-${{ runner.arch }}
+        restore-keys: |
+          ocr-cli-
 
     - name: Install and run review CLI
       if: |
@@ -673,14 +749,31 @@ runs:
       env:
         BASE_SHA: ${{ steps.context.outputs.base_sha }}
         HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+        OCR_VERSION: ${{ inputs.ocr_version }}
+        OCR_MODEL_INPUT: ${{ inputs.ocr_model }}
+        ORG_MODEL_VAR: ${{ vars.OCR_LLM_MODEL }}
       run: |
-        npm install -g --force @alibaba-group/open-code-review@1.8.9 2>&1
+        OCR_START=$(date +%s%3N)
+        # Restore the global bin link (it lives outside the cached npm tree) and
+        # validate the cached CLI; any miss/corruption falls back to install.
+        ln -sf /usr/local/lib/node_modules/@alibaba-group/open-code-review/bin/ocr.js /usr/local/bin/ocr 2>/dev/null || true
         hash -r
-        which ocr || { echo "::error::ocr CLI not found after install"; exit 1; }
+        if ! command -v ocr >/dev/null 2>&1 || ! ocr --version >/dev/null 2>&1; then
+          npm install -g --force "@alibaba-group/open-code-review@${OCR_VERSION}" 2>&1
+          hash -r
+          which ocr || { echo "::error::ocr CLI not found after install"; exit 1; }
+          echo "ocr_install_ms=$(($(date +%s%3N) - OCR_START))" >> "$GITHUB_ENV"
+          echo "ocr_cache_hit=false" >> "$GITHUB_ENV"
+        else
+          echo "ocr_install_ms=0" >> "$GITHUB_ENV"
+          echo "ocr_cache_hit=true" >> "$GITHUB_ENV"
+        fi
+        # Same precedence as the manifest step; covers skip_context runs too.
+        RESOLVED_MODEL="${OCR_MODEL_EFFECTIVE:-${OCR_MODEL_INPUT:-${ORG_MODEL_VAR:-deepseek/deepseek-v4-pro}}}"
         ocr config set llm.url "${{ inputs.ocr_llm_url }}"
         ocr config set llm.auth_token "${{ inputs.ocr_llm_token }}"
         ocr config set llm.protocol openai
-        ocr config set llm.model "${{ inputs.ocr_model }}"
+        ocr config set llm.model "${RESOLVED_MODEL}"
         echo "=== Running review ==="
         ocr review --from "$BASE_SHA" --to "$HEAD_SHA" \
           --rule "$RUNNER_TEMP/ocr-rule.json" \
@@ -734,9 +827,11 @@ runs:
           const diffLines = parseDiffPatches(prFiles.map(f => ({ filename: f.filename, patch: f.patch })));
           const result = computeFindings({ findings, anchors, diffLines });
 
-          // Parse optional rate table for cost computation
+          // Parse optional rate table for cost computation.
+          // Precedence: workflow input > REVIEW.md engine block (both already folded
+          // into OCR_RATES_EFFECTIVE by the manifest step; fall back to raw input).
           let rates = null;
-          const ratesInput = '${{ inputs.ocr_cost_rates }}';
+          const ratesInput = process.env.OCR_RATES_EFFECTIVE || '${{ inputs.ocr_cost_rates }}';
           if (ratesInput) {
             try { rates = JSON.parse(ratesInput); } catch { core.warning('ocr_cost_rates is not valid JSON - cost will be omitted'); }
           }
@@ -827,7 +922,7 @@ runs:
             headSha,
             verdictMarker: '${{ inputs.verdict_marker }}',
             headMarker: '${{ inputs.head_marker }}',
-            model: '${{ inputs.ocr_model }}',
+            model: process.env.OCR_MODEL_EFFECTIVE || '${{ inputs.ocr_model }}' || 'deepseek/deepseek-v4-pro',
             serenaStatus,
             manifestStatus,
             measurement: {
@@ -868,8 +963,10 @@ runs:
         MODE: ${{ steps.pr-info.outputs.mode }}
         ENGINE: ocr
         REPO: ${{ github.repository }}
-        MODEL: ${{ inputs.ocr_model }}
+        MODEL: ${{ env.OCR_MODEL_EFFECTIVE || inputs.ocr_model }}
         ORG_PROFILES: ${{ inputs.org_profiles }}
+        OCR_CACHE_HIT: ${{ env.ocr_cache_hit }}
+        OCR_INSTALL_MS: ${{ env.ocr_install_ms }}
       run: |
         mkdir -p "$RUNNER_TEMP/telemetry"
         node -e "
@@ -902,6 +999,8 @@ runs:
             serena: { status: process.env.SERENA_STATUS || 'disabled' },
             timestamp: measurement.timestamp || new Date().toISOString(),
             verdict: (ocrResult.kept || 0) > 0 ? 'FAIL' : 'PASS',
+            ocr_cache_hit: process.env.OCR_CACHE_HIT || null,
+            ocr_install_ms: process.env.OCR_INSTALL_MS != null && process.env.OCR_INSTALL_MS !== '' ? Number(process.env.OCR_INSTALL_MS) : null,
             findings: {
               kept: ocrResult.kept || 0,
               dropped: ocrResult.dropped || 0,
@@ -926,17 +1025,17 @@ runs:
         path: ${{ runner.temp }}/telemetry/review-run.json
         if-no-files-found: ignore
 
-    - name: Push run metrics (Datadog)
-      if: always() && inputs.metrics_datadog_api_key != ''
+    - name: Push run metrics (OTLP)
+      if: always() && inputs.metrics_otlp_auth != ''
       shell: bash
       env:
-        DD_API_KEY: ${{ inputs.metrics_datadog_api_key }}
-        DD_SITE: ${{ inputs.metrics_datadog_site }}
+        OTEL_EXPORTER_OTLP_ENDPOINT: ${{ inputs.metrics_otlp_endpoint }}
+        OTEL_EXPORTER_OTLP_AUTH: ${{ inputs.metrics_otlp_auth }}
       run: node "${{ github.action_path }}/dist/monitoring/push-run-metrics.js" "$RUNNER_TEMP/telemetry/review-run.json"
 
     # ── Post failure comment ────────────────────────────────────────────────
     - name: Post failure comment
-      if: (failure() || cancelled()) && steps.ocr-rules.outputs.aborted_with_comment != 'true'
+      if: (failure() || cancelled()) && steps.manifest.outputs.aborted_with_comment != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

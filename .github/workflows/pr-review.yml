@@ -10,11 +10,18 @@ on:
       ocr_model:
         required: false
         type: string
-        default: "deepseek/deepseek-v4-pro"
+        default: ""
+        description: >-
+          Explicit model override. Empty = resolve from REVIEW.md engine block,
+          then org variable OCR_LLM_MODEL, then the toolkit default.
       ocr_cost_rates:
         required: false
         type: string
         default: ""
+      ocr_version:
+        required: false
+        type: string
+        default: "1.8.9"
       fail_closed_context:
         required: false
         type: string
@@ -23,15 +30,16 @@ on:
         required: false
         type: string
         default: ""
-    secrets:
-      ocr_llm_url:
-        required: true
-      ocr_llm_token:
-        required: true
-      metrics_datadog_api_key:
+      metrics_otlp_endpoint:
         required: false
-      metrics_datadog_site:
-        required: false
+        type: string
+        default: "https://otlp-dev.astronauts.id/v1/metrics"
+
+# Credentials are toolkit-owned: org-level secrets are available inside reusable
+# workflows when callers use `secrets: inherit`. Consumers carry ZERO LLM/OTLP
+# secrets of their own — the required-secret declarations were removed on purpose.
+# Org secrets expected: OCR_LLM_URL, OCR_LLM_AUTH_TOKEN, OTLP_AUTH.
+# Org variable: OCR_LLM_MODEL (fallback model when REVIEW.md engine omits one).
 
 jobs:
   review:
@@ -55,9 +63,10 @@ jobs:
           org_profiles: ${{ inputs.org_profiles }}
           ocr_model: ${{ inputs.ocr_model }}
           ocr_cost_rates: ${{ inputs.ocr_cost_rates }}
+          ocr_version: ${{ inputs.ocr_version }}
           fail_closed_context: ${{ inputs.fail_closed_context }}
           issue_number: ${{ inputs.issue_number }}
-          ocr_llm_url: ${{ secrets.ocr_llm_url }}
-          ocr_llm_token: ${{ secrets.ocr_llm_token }}
-          metrics_datadog_api_key: ${{ secrets.metrics_datadog_api_key }}
-          metrics_datadog_site: ${{ secrets.metrics_datadog_site }}
+          ocr_llm_url: ${{ secrets.OCR_LLM_URL }}
+          ocr_llm_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+          metrics_otlp_endpoint: ${{ inputs.metrics_otlp_endpoint }}
+          metrics_otlp_auth: ${{ secrets.OTLP_AUTH }}

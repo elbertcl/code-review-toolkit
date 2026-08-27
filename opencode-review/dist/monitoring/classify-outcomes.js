@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { computeObservedPrecision, computeEstimatedRecall, } from "./precision-recall.js";
-import { pushToDatadog } from "./push-datadog.js";
+import { buildOtlpRequest, pushToOtlp, readOtlpConfigFromEnv } from "./otlp.js";
 const SEVERITY_RE = /^\*\*\[(CRITICAL|HIGH|MEDIUM|LOW)/i;
 const ANCHOR_WINDOW = 5;
 const isBot = (c) => {
@@ -73,28 +73,27 @@ export function classifyThreads(threads) {
         severityOutcome,
     };
 }
-export function buildOutcomeSeries(s, tags, ts) {
+export function buildOutcomeMetrics(s, baseAttrs) {
     const points = [];
     if (s.precision != null)
-        points.push(["effectiveness.precision_observed", s.precision, []]);
+        points.push(["effectiveness.precision_observed", s.precision, {}]);
     if (s.recall != null)
-        points.push(["effectiveness.recall_estimated", s.recall, []]);
+        points.push(["effectiveness.recall_estimated", s.recall, {}]);
     if (s.threadResolveRate != null)
-        points.push(["engagement.thread_resolve_rate", s.threadResolveRate, []]);
+        points.push(["engagement.thread_resolve_rate", s.threadResolveRate, {}]);
     if (s.avgFirstResponseHours != null)
-        points.push(["engagement.avg_first_response_hours", s.avgFirstResponseHours, []]);
-    points.push(["engagement.unmatched_human_findings", s.unmatchedHuman, []]);
+        points.push(["engagement.avg_first_response_hours", s.avgFirstResponseHours, {}]);
+    points.push(["engagement.unmatched_human_findings", s.unmatchedHuman, {}]);
     for (const [severity, outcomes] of Object.entries(s.severityOutcome)) {
         for (const [outcome, count] of Object.entries(outcomes)) {
             if (count > 0)
-                points.push(["effectiveness.findings", count, [`severity:${severity}`, `outcome:${outcome}`]]);
+                points.push(["effectiveness.findings", count, { severity, outcome }]);
         }
     }
     return points.map(([name, value, extra]) => ({
-        metric: `code_review_toolkit.${name}`,
-        points: [[ts, value]],
-        type: "gauge",
-        tags: [...tags, ...extra],
+        name: `code_review_toolkit.${name}`,
+        value,
+        attributes: { ...baseAttrs, ...extra },
     }));
 }
 export function recoverModelFromVerdicts(comments, verdictMarker) {
@@ -120,27 +119,28 @@ if (process.argv[1] && process.argv[1].endsWith("classify-outcomes.js")) {
         process.stdout.write("outcomes: no bot findings — nothing to push\n");
         process.exit(0);
     }
-    const tags = [];
+    const attributes = {};
     if (process.env.GITHUB_REPOSITORY)
-        tags.push(`repo:${process.env.GITHUB_REPOSITORY}`);
+        attributes.repo = process.env.GITHUB_REPOSITORY;
     const { model, verdictAt } = recoverModelFromVerdicts(comments, "<!-- opencode-pr-review -->");
     if (model)
-        tags.push(`model:${model}`);
+        attributes.model = model;
     if (verdictAt) {
         const lagH = Math.round((Date.now() - Date.parse(verdictAt)) / 3_600_000);
         if (Number.isFinite(lagH) && lagH >= 0)
-            tags.push(`outcome_lag_h:${lagH}`);
+            attributes.outcome_lag_h = String(lagH);
     }
-    writeFileSync("/tmp/outcome-summary.json", JSON.stringify({ summary, tags }, null, 2) + "\n");
-    const apiKey = process.env.DD_API_KEY || "";
-    if (!apiKey) {
-        process.stdout.write("outcomes: DD_API_KEY not set — wrote /tmp/outcome-summary.json only\n");
+    writeFileSync("/tmp/outcome-summary.json", JSON.stringify({ summary, attributes }, null, 2) + "\n");
+    const config = readOtlpConfigFromEnv();
+    if (!config) {
+        process.stdout.write("outcomes: OTEL_EXPORTER_OTLP_AUTH not set — wrote /tmp/outcome-summary.json only\n");
         process.exit(0);
     }
-    const series = buildOutcomeSeries(summary, tags, Math.floor(Date.now() / 1000));
-    pushToDatadog(apiKey, process.env.DD_SITE || "datadoghq.com", series)
+    const body = buildOtlpRequest(buildOutcomeMetrics(summary, attributes), undefined, Date.now());
+    pushToOtlp(config.endpoint, config.authHeader, body, config.timeoutMs)
         .then((r) => {
-        process.stdout.write(r.ok ? "outcomes: pushed\n" : `outcomes: push failed (${r.error})\n`);
+        const partial = r.partial ? ` (partial: ${r.partial.rejectedDataPoints} rejected)` : "";
+        process.stdout.write(r.ok ? `outcomes: pushed${partial}\n` : `outcomes: push failed (HTTP ${r.status}: ${r.error ?? ""})\n`);
         process.exit(0);
     })
         .catch((e) => {

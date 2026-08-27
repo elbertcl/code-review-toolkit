@@ -29,11 +29,11 @@ jobs:
     uses: elbertcl/code-review-toolkit/.github/workflows/pr-review.yml@v4
     with:
       org_profiles: backend/security,backend/sre
-    secrets:
-      ocr_llm_url: ${{ secrets.OCR_POC_LLM_URL }}
-      ocr_llm_token: ${{ secrets.OCR_POC_LLM_TOKEN }}
-      metrics_datadog_api_key: ${{ secrets.DATADOG_API_KEY }}
+    secrets: inherit
 ```
+
+Org-level secrets expected: `OCR_LLM_URL`, `OCR_LLM_AUTH_TOKEN` (LLM access) and
+`OTLP_AUTH` (metrics, optional) — set once by an org admin; consuming repos need nothing.
 
 The action automatically detects:
 - **First-time review** — full review of the entire PR diff
@@ -101,6 +101,33 @@ remain valid and do not need upgrading. Set `"schema_version": 2` in
 `REVIEW.md` to use directives. The field is optional — absent means no
 directive rules.
 
+### Manifest schema v3 (`engine` block)
+
+Schema v3 adds an optional `engine` object for per-repo review-engine preferences:
+`ocr_model`, `ocr_cost_rates`, `serena` (boolean), and `org_profiles_add` (additive-only;
+values must be in the org allowlist). Credentials **never** go in `REVIEW.md` — they are
+toolkit-owned (see "Credentials" below). Schema v1/v2 manifests remain valid unchanged.
+
+Precedence for each field: **workflow input > `REVIEW.md` `engine` block > org variable
+`OCR_LLM_MODEL` (models only) > toolkit default.**
+
+```json
+{
+  "schema_version": 3,
+  "engine": {
+    "ocr_model": "deepseek/deepseek-v4-pro",
+    "ocr_cost_rates": {"deepseek/deepseek-v4-pro": {"input_per_million": 0.14, "output_per_million": 0.28}},
+    "serena": true,
+    "org_profiles_add": ["backend/security"]
+  }
+}
+```
+
+`org_profiles` resolves as **locked baseline ∪ workflow input ∪ repo additions** — a repo
+can add lanes (e.g. `frontend/security`), never remove or replace the org baseline. The
+security property is unchanged: `REVIEW.md` is read from the PR **base ref**, so a PR author
+who weakens `engine` in their own PR does not affect their own review.
+
 ### OCR engine
 
 OCR runs **unconditionally** since v4.3.1 — it is the sole review path and no longer
@@ -121,16 +148,33 @@ Consumer setup is a thin workflow that only passes the flag:
   with:
     mentions: /review-ocr
     use_github_token: true
-    ocr_llm_url: ${{ secrets.OCR_POC_LLM_URL }}
-    ocr_llm_token: ${{ secrets.OCR_POC_LLM_TOKEN }}
+    ocr_llm_url: ${{ secrets.OCR_LLM_URL }}
+    ocr_llm_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
 ```
 
-**Per-repo model choice:** pass `ocr_model` (default `deepseek/deepseek-v4-pro`). Verify IDs
-against the provider catalog (`curl -sf https://models.dev/api.json | jq '.<provider>'`).
+**Credentials (toolkit-owned):** LLM and telemetry credentials live at the **org level**
+(`OCR_LLM_URL`, `OCR_LLM_AUTH_TOKEN`, `OTLP_AUTH` secrets; `OCR_LLM_MODEL` variable) —
+consumer repos carry **zero** review secrets. When calling the reusable workflow
+(`.github/workflows/pr-review.yml@v4`), use `secrets: inherit` and org secrets resolve
+automatically; no per-repo secrets are declared or needed. Direct composite-action callers
+pass the two values explicitly as above.
 
-**Observability (opt-in):** set `metrics_datadog_api_key` (+ `metrics_datadog_site`) to push
-per-run efficiency/context/reliability metrics (D1/D4/D5) at review time — best-effort, never
-fails the review. Add the PR-closed outcome workflow to also collect quality metrics (D2/D3):
+**Per-repo model choice:** set `engine.ocr_model` in `REVIEW.md` (preferred), or pass the
+`ocr_model` input. Empty input falls back: `REVIEW.md` engine block → org variable
+`OCR_LLM_MODEL` → `deepseek/deepseek-v4-pro`. Verify IDs against the provider catalog
+(`curl -sf https://models.dev/api.json | jq '.<provider>'`).
+
+**CLI caching:** the `ocr` CLI is cached per `ocr_version` input (default `1.8.9`) via
+`actions/cache`, mirroring the Serena cache — repeated reviews skip the npm install +
+binary download round-trip entirely. Cache misses fall back to install, so correctness never
+depends on the cache. Telemetry records `ocr_cache_hit` / `ocr_install_ms` per run.
+
+**Observability (opt-in):** set `metrics_otlp_auth` (raw `Authorization` header value,
+e.g. `Bearer <token>`) to push per-run efficiency/context/reliability metrics (D1/D4/D5) at
+review time to the self-owned OTLP collector — best-effort, never fails the review. Default
+endpoint `https://otlp-dev.astronauts.id/v1/metrics`; override with `metrics_otlp_endpoint`.
+Datadog was removed — all metrics now speak OTLP/HTTP JSON. Add the PR-closed outcome
+workflow to also collect quality metrics (D2/D3):
 
 ```yaml
 name: Review Outcome
@@ -142,15 +186,13 @@ jobs:
     uses: elbertcl/code-review-toolkit/.github/workflows/review-outcome.yml@v4
     with:
       pr_number: ${{ github.event.pull_request.number }}
-    secrets:
-      metrics_datadog_api_key: ${{ secrets.DATADOG_API_KEY }}
+    secrets: inherit
 ```
 
-All metrics land in the shared `code-review-toolkit` Datadog dashboard
-(`docs/dashboard/datadog-code-review-toolkit.json`), sliced by `repo` and `model` tags:
-cost/tokens/elapsed, observed precision & estimated recall (from thread outcomes at PR
-close), rule-citation rate, context sizes, and reliability counters (fallback, Serena
-fail-open, BLOCKED).
+All metrics land in the self-owned OTel backend under `service.name: code-review-toolkit`,
+sliced by `repo` and `model` datapoint attributes: cost/tokens/elapsed, observed precision &
+estimated recall (from thread outcomes at PR close), rule-citation rate, context sizes, and
+reliability counters (fallback, Serena fail-open, BLOCKED).
 
 **OCR thread awareness — what it does and its ceiling:** OCR uses `--background-file` to carry
 a budgeted (~8KB) reasoning digest that includes:

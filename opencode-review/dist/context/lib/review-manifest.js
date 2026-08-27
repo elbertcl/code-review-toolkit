@@ -1,11 +1,12 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 export const GAP_MARKER = "ASTRO_REVIEW_CONTEXT_INCOMPLETE";
+const ENGINE_KEYS = new Set(["ocr_model", "ocr_cost_rates", "serena", "org_profiles_add"]);
 const MANIFEST_KEYS = new Set([
     "schema_version", "policy_path",
     "verification_commands", "required_context", "optional_context",
     "conditional_context", "required_checks", "diff_limits", "diff_override",
-    "docs_only_paths", "excluded_paths", "review_directives",
+    "docs_only_paths", "excluded_paths", "review_directives", "engine",
 ]);
 const ROLES = new Set([
     "instructions", "policy", "architecture", "invariants", "testspec",
@@ -14,6 +15,32 @@ const ROLES = new Set([
 const CHECK_CATEGORIES = new Set(["test", "security", "policy"]);
 function fail(message) {
     throw new Error(`Invalid review manifest: ${message}`);
+}
+function validateEngineConfig(value, field) {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+        fail(`${field} must be an object`);
+    const e = value;
+    for (const key of Object.keys(e))
+        if (!ENGINE_KEYS.has(key))
+            fail(`${field} contains unknown key ${key}`);
+    if (e.ocr_model !== undefined && (typeof e.ocr_model !== "string" || !e.ocr_model.trim()))
+        fail(`${field}.ocr_model must be a non-empty string`);
+    if (e.ocr_cost_rates !== undefined) {
+        const rates = e.ocr_cost_rates;
+        if (typeof rates !== "object" || rates === null || Array.isArray(rates) || Object.keys(rates).length === 0)
+            fail(`${field}.ocr_cost_rates must be a non-empty object`);
+    }
+    if (e.serena !== undefined && typeof e.serena !== "boolean")
+        fail(`${field}.serena must be a boolean`);
+    if (e.org_profiles_add !== undefined) {
+        if (!Array.isArray(e.org_profiles_add) || e.org_profiles_add.length === 0)
+            fail(`${field}.org_profiles_add must be a non-empty array`);
+        for (const profile of e.org_profiles_add) {
+            if (typeof profile !== "string" || !(profile in ORGANIZATION_PROFILE_ALLOWLIST)) {
+                fail(`${field}.org_profiles_add contains a profile outside the allowlist: ${String(profile)}`);
+            }
+        }
+    }
 }
 function requireNonEmptyStrings(value, field) {
     if (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== "string" || !item.trim())) {
@@ -99,15 +126,19 @@ export function validateManifest(manifest) {
         if (!MANIFEST_KEYS.has(key))
             fail(`unknown key ${key}`);
     for (const key of MANIFEST_KEYS)
-        if (!(key in m) && key !== "review_directives")
+        if (!(key in m) && key !== "review_directives" && key !== "engine")
             fail(`missing key ${key}`);
-    if (m.schema_version !== 1 && m.schema_version !== 2)
-        fail("schema_version must be 1 or 2");
-    if ("review_directives" in m && m.schema_version !== 2)
+    if (m.schema_version !== 1 && m.schema_version !== 2 && m.schema_version !== 3)
+        fail("schema_version must be 1, 2, or 3");
+    if ("review_directives" in m && m.schema_version !== 2 && m.schema_version !== 3)
         fail("review_directives requires schema_version 2");
+    if ("engine" in m && m.schema_version !== 3)
+        fail("engine requires schema_version 3");
     if (m.profile !== undefined || m.organization_profiles !== undefined) {
         fail("profile/organization_profiles are no longer repo-owned; set org_profiles in the workflow");
     }
+    if ("engine" in m)
+        validateEngineConfig(m.engine, "engine");
     validateExactPath(m.policy_path, "policy_path");
     requireNonEmptyStrings(m.verification_commands, "verification_commands");
     if (!Array.isArray(m.required_context) || !Array.isArray(m.optional_context))
@@ -295,5 +326,16 @@ export function mergeWithDefaults(manifest, defaults) {
         merged.docs_only_paths = [...new Set([...defaults.bounded.docs_only_paths, ...(manifest.docs_only_paths ?? [])])];
     }
     return merged;
+}
+/**
+ * Resolve the effective org profiles: locked baseline ∪ workflow input ∪ repo engine additions.
+ * The baseline comes from manifest-defaults.json, the workflow input carries org-level mandates,
+ * and `engine.org_profiles_add` (schema v3) lets a repo ADD profiles — never remove or replace.
+ */
+export function resolveOrgProfiles(manifest, defaults, workflowInput) {
+    const baseline = defaults?.locked.org_profiles_baseline ?? [];
+    const additions = manifest.engine?.org_profiles_add ?? [];
+    const fromWorkflow = workflowInput.split(",").map((p) => p.trim()).filter(Boolean);
+    return [...new Set([...baseline, ...fromWorkflow, ...additions])];
 }
 //# sourceMappingURL=review-manifest.js.map

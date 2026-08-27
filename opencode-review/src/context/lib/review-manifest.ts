@@ -39,6 +39,13 @@ export interface DiffLimits {
   changed_lines: number;
 }
 
+export interface EngineConfig {
+  ocr_model?: string;
+  ocr_cost_rates?: Record<string, unknown>;
+  serena?: boolean;
+  org_profiles_add?: string[];
+}
+
 export interface Manifest {
   schema_version: number;
   policy_path: string;
@@ -52,13 +59,16 @@ export interface Manifest {
   docs_only_paths: string[];
   excluded_paths: string[];
   review_directives?: ReviewDirectiveEntry[];
+  engine?: EngineConfig;
 }
+
+const ENGINE_KEYS = new Set(["ocr_model", "ocr_cost_rates", "serena", "org_profiles_add"]);
 
 const MANIFEST_KEYS = new Set([
   "schema_version", "policy_path",
   "verification_commands", "required_context", "optional_context",
   "conditional_context", "required_checks", "diff_limits", "diff_override",
-  "docs_only_paths", "excluded_paths", "review_directives",
+  "docs_only_paths", "excluded_paths", "review_directives", "engine",
 ]);
 const ROLES = new Set([
   "instructions", "policy", "architecture", "invariants", "testspec",
@@ -68,6 +78,26 @@ const CHECK_CATEGORIES = new Set(["test", "security", "policy"]);
 
 function fail(message: string): never {
   throw new Error(`Invalid review manifest: ${message}`);
+}
+
+function validateEngineConfig(value: unknown, field: string): asserts value is EngineConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail(`${field} must be an object`);
+  const e = value as Record<string, unknown>;
+  for (const key of Object.keys(e)) if (!ENGINE_KEYS.has(key)) fail(`${field} contains unknown key ${key}`);
+  if (e.ocr_model !== undefined && (typeof e.ocr_model !== "string" || !e.ocr_model.trim())) fail(`${field}.ocr_model must be a non-empty string`);
+  if (e.ocr_cost_rates !== undefined) {
+    const rates = e.ocr_cost_rates as Record<string, unknown>;
+    if (typeof rates !== "object" || rates === null || Array.isArray(rates) || Object.keys(rates).length === 0) fail(`${field}.ocr_cost_rates must be a non-empty object`);
+  }
+  if (e.serena !== undefined && typeof e.serena !== "boolean") fail(`${field}.serena must be a boolean`);
+  if (e.org_profiles_add !== undefined) {
+    if (!Array.isArray(e.org_profiles_add) || e.org_profiles_add.length === 0) fail(`${field}.org_profiles_add must be a non-empty array`);
+    for (const profile of e.org_profiles_add as unknown[]) {
+      if (typeof profile !== "string" || !(profile in ORGANIZATION_PROFILE_ALLOWLIST)) {
+        fail(`${field}.org_profiles_add contains a profile outside the allowlist: ${String(profile)}`);
+      }
+    }
+  }
 }
 
 function requireNonEmptyStrings(value: unknown, field: string): asserts value is string[] {
@@ -144,12 +174,14 @@ export function validateManifest(manifest: unknown): Manifest {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) fail("manifest must be an object");
   const m = manifest as Record<string, unknown>;
   for (const key of Object.keys(m)) if (!MANIFEST_KEYS.has(key)) fail(`unknown key ${key}`);
-  for (const key of MANIFEST_KEYS) if (!(key in m) && key !== "review_directives") fail(`missing key ${key}`);
-  if (m.schema_version !== 1 && m.schema_version !== 2) fail("schema_version must be 1 or 2");
-  if ("review_directives" in m && m.schema_version !== 2) fail("review_directives requires schema_version 2");
+  for (const key of MANIFEST_KEYS) if (!(key in m) && key !== "review_directives" && key !== "engine") fail(`missing key ${key}`);
+  if (m.schema_version !== 1 && m.schema_version !== 2 && m.schema_version !== 3) fail("schema_version must be 1, 2, or 3");
+  if ("review_directives" in m && m.schema_version !== 2 && m.schema_version !== 3) fail("review_directives requires schema_version 2");
+  if ("engine" in m && m.schema_version !== 3) fail("engine requires schema_version 3");
   if (m.profile !== undefined || m.organization_profiles !== undefined) {
     fail("profile/organization_profiles are no longer repo-owned; set org_profiles in the workflow");
   }
+  if ("engine" in m) validateEngineConfig(m.engine, "engine");
   validateExactPath(m.policy_path, "policy_path");
   requireNonEmptyStrings(m.verification_commands, "verification_commands");
   if (!Array.isArray(m.required_context) || !Array.isArray(m.optional_context)) fail("context fields must be arrays");
@@ -294,6 +326,7 @@ export interface ManifestDefaults {
     excluded_paths?: string[];
     diff_override?: DiffOverride;
     review_directives?: ReviewDirectiveEntry[];
+    org_profiles_baseline?: string[];
   };
   bounded: {
     diff_limits?: DiffLimits;
@@ -342,4 +375,20 @@ export function mergeWithDefaults(manifest: Manifest, defaults: ManifestDefaults
   }
 
   return merged;
+}
+
+/**
+ * Resolve the effective org profiles: locked baseline ∪ workflow input ∪ repo engine additions.
+ * The baseline comes from manifest-defaults.json, the workflow input carries org-level mandates,
+ * and `engine.org_profiles_add` (schema v3) lets a repo ADD profiles — never remove or replace.
+ */
+export function resolveOrgProfiles(
+  manifest: Manifest,
+  defaults: ManifestDefaults | null,
+  workflowInput: string,
+): string[] {
+  const baseline = defaults?.locked.org_profiles_baseline ?? [];
+  const additions = manifest.engine?.org_profiles_add ?? [];
+  const fromWorkflow = workflowInput.split(",").map((p) => p.trim()).filter(Boolean);
+  return [...new Set([...baseline, ...fromWorkflow, ...additions])];
 }

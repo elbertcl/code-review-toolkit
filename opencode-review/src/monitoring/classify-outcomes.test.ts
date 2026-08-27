@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { classifyThreads, buildOutcomeSeries, recoverModelFromVerdicts, ThreadNode } from "./classify-outcomes.js";
+import { classifyThreads, buildOutcomeMetrics, recoverModelFromVerdicts, ThreadNode } from "./classify-outcomes.js";
 
 function botThread(path: string, line: number, opts: { resolved?: boolean; humanReply?: string } = {}): ThreadNode {
   const nodes: Array<{ author: { login: string } | null; body: string; path: string; line: number | null; createdAt: string }> = [
@@ -70,17 +70,17 @@ describe("classifyThreads", () => {
   });
 });
 
-describe("buildOutcomeSeries", () => {
-  it("tags severity x outcome counts and prefixes names", () => {
+describe("buildOutcomeMetrics", () => {
+  it("attributes severity x outcome counts and prefixes names", () => {
     const s = classifyThreads([botThread("a.go", 10, { resolved: true }), botThread("a.go", 20, { humanReply: "no" })]);
-    const series = buildOutcomeSeries(s, ["repo:o/r"], 1);
-    assert.ok(series.every((x) => x.metric.startsWith("code_review_toolkit.")));
-    assert.ok(series.every((x) => x.tags.includes("repo:o/r")));
-    const findings = series.filter((x) => x.metric === "code_review_toolkit.effectiveness.findings");
+    const metrics = buildOutcomeMetrics(s, { repo: "o/r" });
+    assert.ok(metrics.every((x) => x.name.startsWith("code_review_toolkit.")));
+    assert.ok(metrics.every((x) => x.attributes!.repo === "o/r"));
+    const findings = metrics.filter((x) => x.name === "code_review_toolkit.effectiveness.findings");
     assert.equal(findings.length, 2);
-    assert.ok(findings.some((x) => x.tags.includes("severity:HIGH") && x.tags.includes("outcome:accepted")));
-    assert.ok(findings.some((x) => x.tags.includes("severity:HIGH") && x.tags.includes("outcome:disputed")));
-    assert.ok(series.some((x) => x.metric === "code_review_toolkit.effectiveness.precision_observed"));
+    assert.ok(findings.some((x) => x.attributes!.severity === "HIGH" && x.attributes!.outcome === "accepted"));
+    assert.ok(findings.some((x) => x.attributes!.severity === "HIGH" && x.attributes!.outcome === "disputed"));
+    assert.ok(metrics.some((x) => x.name === "code_review_toolkit.effectiveness.precision_observed"));
   });
 });
 
