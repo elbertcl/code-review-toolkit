@@ -2,6 +2,19 @@
 
 AI-powered PR review infrastructure for astronautsid repos.
 
+## Onboarding a New Repo
+
+See [`docs/onboarding/`](docs/onboarding/) for the complete guide:
+
+- [ONBOARDING.md](docs/onboarding/ONBOARDING.md) — step-by-step for new repos, existing repos (with/without Serena)
+- [MANIFEST-REFERENCE.md](docs/onboarding/MANIFEST-REFERENCE.md) — full REVIEW.md field reference
+- [EXTENDING-TO-NEW-STACKS.md](docs/onboarding/EXTENDING-TO-NEW-STACKS.md) — adding org profiles for QA/Data/etc.
+- [templates/](docs/onboarding/templates/) — copy-paste workflow, REVIEW.md, and review-dimensions starters
+
+Quick start: copy a [workflow template](docs/onboarding/templates/), generate `REVIEW.md` with the
+[`initialize-review-context`](skills/initialize-review-context/SKILL.md) skill, and set the
+`REVIEW_LLM_URL` + `REVIEW_LLM_TOKEN` secrets.
+
 ## Usage
 
 **Default trigger: review on every push + `/review` comment**, via one reusable workflow:
