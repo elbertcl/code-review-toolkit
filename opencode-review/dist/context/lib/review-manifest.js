@@ -1,11 +1,12 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 export const GAP_MARKER = "ASTRO_REVIEW_CONTEXT_INCOMPLETE";
+const ENGINE_KEYS = new Set(["ocr_model", "serena"]);
 const MANIFEST_KEYS = new Set([
     "schema_version", "policy_path",
     "verification_commands", "required_context", "optional_context",
     "conditional_context", "required_checks", "diff_limits", "diff_override",
-    "docs_only_paths", "excluded_paths", "review_directives",
+    "docs_only_paths", "excluded_paths", "review_directives", "engine",
 ]);
 const ROLES = new Set([
     "instructions", "policy", "architecture", "invariants", "testspec",
@@ -14,6 +15,18 @@ const ROLES = new Set([
 const CHECK_CATEGORIES = new Set(["test", "security", "policy"]);
 function fail(message) {
     throw new Error(`Invalid review manifest: ${message}`);
+}
+function validateEngineConfig(value, field) {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+        fail(`${field} must be an object`);
+    const e = value;
+    for (const key of Object.keys(e))
+        if (!ENGINE_KEYS.has(key))
+            fail(`${field} contains unknown key ${key}`);
+    if (e.ocr_model !== undefined && (typeof e.ocr_model !== "string" || !e.ocr_model.trim()))
+        fail(`${field}.ocr_model must be a non-empty string`);
+    if (e.serena !== undefined && typeof e.serena !== "boolean")
+        fail(`${field}.serena must be a boolean`);
 }
 function requireNonEmptyStrings(value, field) {
     if (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== "string" || !item.trim())) {
@@ -99,15 +112,19 @@ export function validateManifest(manifest) {
         if (!MANIFEST_KEYS.has(key))
             fail(`unknown key ${key}`);
     for (const key of MANIFEST_KEYS)
-        if (!(key in m) && key !== "review_directives")
+        if (!(key in m) && key !== "review_directives" && key !== "engine")
             fail(`missing key ${key}`);
-    if (m.schema_version !== 1 && m.schema_version !== 2)
-        fail("schema_version must be 1 or 2");
-    if ("review_directives" in m && m.schema_version !== 2)
+    if (m.schema_version !== 1 && m.schema_version !== 2 && m.schema_version !== 3)
+        fail("schema_version must be 1, 2, or 3");
+    if ("review_directives" in m && m.schema_version !== 2 && m.schema_version !== 3)
         fail("review_directives requires schema_version 2");
+    if ("engine" in m && m.schema_version !== 3)
+        fail("engine requires schema_version 3");
     if (m.profile !== undefined || m.organization_profiles !== undefined) {
         fail("profile/organization_profiles are no longer repo-owned; set org_profiles in the workflow");
     }
+    if ("engine" in m)
+        validateEngineConfig(m.engine, "engine");
     validateExactPath(m.policy_path, "policy_path");
     requireNonEmptyStrings(m.verification_commands, "verification_commands");
     if (!Array.isArray(m.required_context) || !Array.isArray(m.optional_context))
@@ -295,5 +312,36 @@ export function mergeWithDefaults(manifest, defaults) {
         merged.docs_only_paths = [...new Set([...defaults.bounded.docs_only_paths, ...(manifest.docs_only_paths ?? [])])];
     }
     return merged;
+}
+export function parseOrgProfilesRegistry(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+        throw new Error("org-profiles registry must be an object");
+    const r = raw;
+    for (const key of Object.keys(r))
+        if (key !== "default" && key !== "repos")
+            throw new Error(`org-profiles registry contains unknown key ${key}`);
+    const validateSet = (value, field) => {
+        if (!Array.isArray(value) || value.length === 0)
+            throw new Error(`org-profiles registry ${field} must be a non-empty array`);
+        for (const profile of value) {
+            if (typeof profile !== "string" || !(profile in ORGANIZATION_PROFILE_ALLOWLIST)) {
+                throw new Error(`org-profiles registry ${field} contains a profile outside the allowlist: ${String(profile)}`);
+            }
+        }
+        return value;
+    };
+    const def = validateSet(r.default, "default");
+    if (!r.repos || typeof r.repos !== "object" || Array.isArray(r.repos))
+        throw new Error("org-profiles registry repos must be an object");
+    for (const [repo, profiles] of Object.entries(r.repos))
+        validateSet(profiles, `repos.${repo}`);
+    if (def.length !== new Set(def).size)
+        throw new Error("org-profiles registry default contains duplicates");
+    return { default: def, repos: r.repos };
+}
+/** Repo-specific assignment wins; unlisted repos run on the registry default. */
+export function resolveOrgProfilesFromRegistry(registry, repoFullName) {
+    const assigned = registry.repos[repoFullName];
+    return assigned && assigned.length > 0 ? assigned : registry.default;
 }
 //# sourceMappingURL=review-manifest.js.map

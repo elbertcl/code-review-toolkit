@@ -1,22 +1,23 @@
 import { readFileSync } from "node:fs";
-import { pushToDatadog } from "./push-datadog.js";
-export function buildRunSeries(row, ts) {
-    const tags = [];
+import { buildOtlpRequest, pushToOtlp, readOtlpConfigFromEnv } from "./otlp.js";
+export function buildRunMetrics(row) {
+    const attributes = {};
     if (row.repo)
-        tags.push(`repo:${row.repo}`);
+        attributes.repo = row.repo;
     if (row.model)
-        tags.push(`model:${row.model}`);
+        attributes.model = row.model;
     if (row.org_profiles) {
         for (const p of row.org_profiles.split(",")) {
             const t = p.trim();
-            if (t)
-                tags.push(`org_profile:${t}`);
+            if (t && !attributes[`org_profile_${t.replace(/[/:]/g, "_")}`]) {
+                attributes[`org_profile_${t.replace(/[/:]/g, "_")}`] = t;
+            }
         }
     }
     if (row.mode)
-        tags.push(`mode:${row.mode}`);
+        attributes.mode = row.mode;
     if (row.verdict)
-        tags.push(`verdict:${row.verdict}`);
+        attributes.verdict = row.verdict;
     const points = [];
     const t = row.tokens ?? {};
     if (Number(t.input))
@@ -55,35 +56,37 @@ export function buildRunSeries(row, ts) {
     if (row.serena?.status === "unavailable")
         points.push(["reliability.serena_fail_open", 1]);
     return points.map(([name, value]) => ({
-        metric: `code_review_toolkit.${name}`,
-        points: [[ts, value]],
-        type: "gauge",
-        tags,
+        name: `code_review_toolkit.${name}`,
+        value,
+        attributes,
     }));
 }
-export async function pushRunMetrics(apiKey, site, row) {
-    const series = buildRunSeries(row, Math.floor(Date.now() / 1000));
-    if (series.length === 0)
-        return { ok: true };
-    const result = await pushToDatadog(apiKey, site, series);
-    return { ok: result.ok, error: result.error };
+export async function pushRunMetrics(config, row) {
+    const metrics = buildRunMetrics(row);
+    if (metrics.length === 0)
+        return { ok: true, status: 0 };
+    const body = buildOtlpRequest(metrics, undefined, Date.now());
+    const result = await pushToOtlp(config.endpoint, config.authHeader, body, config.timeoutMs);
+    return { ok: result.ok, status: result.status, error: result.error, partial: result.partial };
 }
 if (process.argv[1] && process.argv[1].endsWith("push-run-metrics.js")) {
     const rowPath = process.argv[2];
-    const apiKey = process.env.DD_API_KEY || "";
     if (!rowPath) {
         process.stderr.write("Usage: node push-run-metrics.js <review-run.json>\n");
         process.exit(1);
     }
-    if (!apiKey) {
-        process.stdout.write("metrics: DD_API_KEY not set — skipping push\n");
+    const config = readOtlpConfigFromEnv();
+    if (!config) {
+        process.stdout.write("metrics: OTEL_EXPORTER_OTLP_AUTH not set — skipping push\n");
         process.exit(0);
     }
     try {
         const row = JSON.parse(readFileSync(rowPath, "utf8"));
-        const result = await pushRunMetrics(apiKey, process.env.DD_SITE || "datadoghq.com", row);
+        const result = await pushRunMetrics(config, row);
         if (!result.ok)
-            process.stdout.write(`metrics: push failed (${result.error})\n`);
+            process.stdout.write(`metrics: push failed (HTTP ${result.status}${result.error ? `: ${result.error.slice(0, 200)}` : ""})\n`);
+        else if (result.partial)
+            process.stdout.write(`metrics: partial success (${result.partial.rejectedDataPoints} rejected: ${result.partial.errorMessage ?? "no reason"})\n`);
         else
             process.stdout.write("metrics: pushed\n");
     }

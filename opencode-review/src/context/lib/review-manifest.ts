@@ -39,6 +39,11 @@ export interface DiffLimits {
   changed_lines: number;
 }
 
+export interface EngineConfig {
+  ocr_model?: string;
+  serena?: boolean;
+}
+
 export interface Manifest {
   schema_version: number;
   policy_path: string;
@@ -52,13 +57,16 @@ export interface Manifest {
   docs_only_paths: string[];
   excluded_paths: string[];
   review_directives?: ReviewDirectiveEntry[];
+  engine?: EngineConfig;
 }
+
+const ENGINE_KEYS = new Set(["ocr_model", "serena"]);
 
 const MANIFEST_KEYS = new Set([
   "schema_version", "policy_path",
   "verification_commands", "required_context", "optional_context",
   "conditional_context", "required_checks", "diff_limits", "diff_override",
-  "docs_only_paths", "excluded_paths", "review_directives",
+  "docs_only_paths", "excluded_paths", "review_directives", "engine",
 ]);
 const ROLES = new Set([
   "instructions", "policy", "architecture", "invariants", "testspec",
@@ -68,6 +76,14 @@ const CHECK_CATEGORIES = new Set(["test", "security", "policy"]);
 
 function fail(message: string): never {
   throw new Error(`Invalid review manifest: ${message}`);
+}
+
+function validateEngineConfig(value: unknown, field: string): asserts value is EngineConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail(`${field} must be an object`);
+  const e = value as Record<string, unknown>;
+  for (const key of Object.keys(e)) if (!ENGINE_KEYS.has(key)) fail(`${field} contains unknown key ${key}`);
+  if (e.ocr_model !== undefined && (typeof e.ocr_model !== "string" || !e.ocr_model.trim())) fail(`${field}.ocr_model must be a non-empty string`);
+  if (e.serena !== undefined && typeof e.serena !== "boolean") fail(`${field}.serena must be a boolean`);
 }
 
 function requireNonEmptyStrings(value: unknown, field: string): asserts value is string[] {
@@ -144,12 +160,14 @@ export function validateManifest(manifest: unknown): Manifest {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) fail("manifest must be an object");
   const m = manifest as Record<string, unknown>;
   for (const key of Object.keys(m)) if (!MANIFEST_KEYS.has(key)) fail(`unknown key ${key}`);
-  for (const key of MANIFEST_KEYS) if (!(key in m) && key !== "review_directives") fail(`missing key ${key}`);
-  if (m.schema_version !== 1 && m.schema_version !== 2) fail("schema_version must be 1 or 2");
-  if ("review_directives" in m && m.schema_version !== 2) fail("review_directives requires schema_version 2");
+  for (const key of MANIFEST_KEYS) if (!(key in m) && key !== "review_directives" && key !== "engine") fail(`missing key ${key}`);
+  if (m.schema_version !== 1 && m.schema_version !== 2 && m.schema_version !== 3) fail("schema_version must be 1, 2, or 3");
+  if ("review_directives" in m && m.schema_version !== 2 && m.schema_version !== 3) fail("review_directives requires schema_version 2");
+  if ("engine" in m && m.schema_version !== 3) fail("engine requires schema_version 3");
   if (m.profile !== undefined || m.organization_profiles !== undefined) {
     fail("profile/organization_profiles are no longer repo-owned; set org_profiles in the workflow");
   }
+  if ("engine" in m) validateEngineConfig(m.engine, "engine");
   validateExactPath(m.policy_path, "policy_path");
   requireNonEmptyStrings(m.verification_commands, "verification_commands");
   if (!Array.isArray(m.required_context) || !Array.isArray(m.optional_context)) fail("context fields must be arrays");
@@ -342,4 +360,40 @@ export function mergeWithDefaults(manifest: Manifest, defaults: ManifestDefaults
   }
 
   return merged;
+}
+
+/**
+ * Central org-profiles registry (context/defaults/org-profiles.json).
+ * Sole source of which repo gets which profiles — repos and workflows no
+ * longer pass or extend profiles. A repo entry REPLACES the default set.
+ */
+export interface OrgProfilesRegistry {
+  default: string[];
+  repos: Record<string, string[]>;
+}
+
+export function parseOrgProfilesRegistry(raw: unknown): OrgProfilesRegistry {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("org-profiles registry must be an object");
+  const r = raw as Record<string, unknown>;
+  for (const key of Object.keys(r)) if (key !== "default" && key !== "repos") throw new Error(`org-profiles registry contains unknown key ${key}`);
+  const validateSet = (value: unknown, field: string): string[] => {
+    if (!Array.isArray(value) || value.length === 0) throw new Error(`org-profiles registry ${field} must be a non-empty array`);
+    for (const profile of value as unknown[]) {
+      if (typeof profile !== "string" || !(profile in ORGANIZATION_PROFILE_ALLOWLIST)) {
+        throw new Error(`org-profiles registry ${field} contains a profile outside the allowlist: ${String(profile)}`);
+      }
+    }
+    return value as string[];
+  };
+  const def = validateSet(r.default, "default");
+  if (!r.repos || typeof r.repos !== "object" || Array.isArray(r.repos)) throw new Error("org-profiles registry repos must be an object");
+  for (const [repo, profiles] of Object.entries(r.repos)) validateSet(profiles, `repos.${repo}`);
+  if (def.length !== new Set(def).size) throw new Error("org-profiles registry default contains duplicates");
+  return { default: def, repos: r.repos as Record<string, string[]> };
+}
+
+/** Repo-specific assignment wins; unlisted repos run on the registry default. */
+export function resolveOrgProfilesFromRegistry(registry: OrgProfilesRegistry, repoFullName: string): string[] {
+  const assigned = registry.repos[repoFullName];
+  return assigned && assigned.length > 0 ? assigned : registry.default;
 }

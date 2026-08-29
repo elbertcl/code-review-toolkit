@@ -26,6 +26,19 @@
 ```
 <!-- astro-review-manifest:end -->
 
+<!--
+  Optional per-repo engine preferences (schema_version 3). Uncomment and set
+  schema_version to 3 above to use. Precedence: workflow input > engine block >
+  org variable OCR_LLM_MODEL > toolkit default. Credentials, cost rates, and
+  org profiles never go here — they are toolkit-owned central config
+  (context/defaults/cost-rates.json, context/defaults/org-profiles.json).
+
+  "engine": {
+    "ocr_model": "deepseek/deepseek-v4-pro",
+    "serena": true
+  }
+-->
+
 # Review Dimensions
 
 > This is the org-default manifest. Add a repo-owned `REVIEW.md` to override.

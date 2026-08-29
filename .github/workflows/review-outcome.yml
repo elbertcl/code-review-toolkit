@@ -10,11 +10,13 @@ on:
         required: false
         type: string
         default: "v4"
-    secrets:
-      metrics_datadog_api_key:
+      metrics_otlp_endpoint:
         required: false
-      metrics_datadog_site:
-        required: false
+        type: string
+        default: "https://otlp-dev.astronauts.id/v1/metrics"
+
+# Credentials are toolkit-owned: org-level OTLP_AUTH is available when callers
+# use `secrets: inherit` — no per-repo secrets needed for outcome metrics.
 
 jobs:
   outcome:
@@ -81,7 +83,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          DD_API_KEY: ${{ secrets.metrics_datadog_api_key }}
-          DD_SITE: ${{ secrets.metrics_datadog_site || 'datadoghq.com' }}
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ inputs.metrics_otlp_endpoint }}
+          OTEL_EXPORTER_OTLP_AUTH: ${{ secrets.OTLP_AUTH }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node toolkit/opencode-review/dist/monitoring/classify-outcomes.js /tmp/threads.json /tmp/comments.json "${{ inputs.pr_number }}"
