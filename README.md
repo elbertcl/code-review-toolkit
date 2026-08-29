@@ -27,10 +27,11 @@ jobs:
        github.event.comment.body == '/review') ||
       (github.event_name == 'pull_request')
     uses: elbertcl/code-review-toolkit/.github/workflows/pr-review.yml@v4
-    with:
-      org_profiles: backend/security,backend/sre
     secrets: inherit
 ```
+
+That is the complete caller config — no `with:` inputs needed. Org profiles come from the
+toolkit's central registry, cost rates from its rate table, and credentials from org secrets.
 
 Org-level secrets expected: `OCR_LLM_URL`, `OCR_LLM_AUTH_TOKEN` (LLM access) and
 `OTLP_AUTH` (metrics, optional) — set once by an org admin; consuming repos need nothing.
@@ -104,9 +105,8 @@ directive rules.
 ### Manifest schema v3 (`engine` block)
 
 Schema v3 adds an optional `engine` object for per-repo review-engine preferences:
-`ocr_model`, `ocr_cost_rates`, `serena` (boolean), and `org_profiles_add` (additive-only;
-values must be in the org allowlist). Credentials **never** go in `REVIEW.md` — they are
-toolkit-owned (see "Credentials" below). Schema v1/v2 manifests remain valid unchanged.
+`ocr_model` and `serena` (boolean). That is the complete list — everything else is
+toolkit-owned central config (see below). Schema v1/v2 manifests remain valid unchanged.
 
 Precedence for each field: **workflow input > `REVIEW.md` `engine` block > org variable
 `OCR_LLM_MODEL` (models only) > toolkit default.**
@@ -116,17 +116,27 @@ Precedence for each field: **workflow input > `REVIEW.md` `engine` block > org v
   "schema_version": 3,
   "engine": {
     "ocr_model": "deepseek/deepseek-v4-pro",
-    "ocr_cost_rates": {"deepseek/deepseek-v4-pro": {"input_per_million": 0.14, "output_per_million": 0.28}},
-    "serena": true,
-    "org_profiles_add": ["backend/security"]
+    "serena": true
   }
 }
 ```
 
-`org_profiles` resolves as **locked baseline ∪ workflow input ∪ repo additions** — a repo
-can add lanes (e.g. `frontend/security`), never remove or replace the org baseline. The
-security property is unchanged: `REVIEW.md` is read from the PR **base ref**, so a PR author
-who weakens `engine` in their own PR does not affect their own review.
+The security property is unchanged: `REVIEW.md` is read from the PR **base ref**, so a PR
+author who weakens `engine` in their own PR does not affect their own review.
+
+### Central configuration (toolkit-owned)
+
+Three concerns moved out of client workflows entirely. Consumers provide **none** of these.
+
+| Concern | Where it lives | How to change |
+|---|---|---|
+| Org profiles (which repo gets which review lanes) | `opencode-review/context/defaults/org-profiles.json` — `{"default": [...], "repos": {"owner/name": [...]}}`; a repo entry **replaces** the default, unlisted repos run on `default` | One reviewed toolkit PR; all `@v4` consumers inherit |
+| Cost rates (per-model token pricing) | `opencode-review/context/defaults/cost-rates.json` | One reviewed toolkit PR |
+| Credentials (LLM URL/token, OTLP auth) | Org-level secrets `OCR_LLM_URL` / `OCR_LLM_AUTH_TOKEN` / `OTLP_AUTH`, org var `OCR_LLM_MODEL` | Org admin, once |
+
+The registry is validated at run start (`parseOrgProfilesRegistry`): unknown keys,
+non-allowlisted profiles, or an empty `default` fail the run loudly rather than silently
+reviewing with wrong rules.
 
 ### OCR engine
 
@@ -219,18 +229,8 @@ this and surfaces it in two places:
    full measurement row: `tokens`, `cost`, `elapsed_ms`, `severity_tally`,
    `tool_calls`, and `suppressed_as_duplicate`.
 
-Dollar cost is **opt-in**. Provide the `ocr_cost_rates` input as a JSON object
-mapping model IDs to per-million-token rates:
-
-```yaml
-- uses: elbertcl/code-review-toolkit/opencode-review@v4
-  with:
-    ocr_llm_url: ${{ secrets.OCR_POC_LLM_URL }}
-    ocr_llm_token: ${{ secrets.OCR_POC_LLM_TOKEN }}
-    ocr_cost_rates: '{"deepseek/deepseek-v4-pro":{"input_per_million":0.14,"output_per_million":0.28,"cache_read_per_million":0.014}}'
-```
-
-When omitted, the footer shows tokens and elapsed time only — no dollar amount.
+Dollar cost comes from the **toolkit's central rate table** (`context/defaults/cost-rates.json`);
+no per-repo input exists. Models absent from the table show tokens/elapsed only — no dollar amount.
 
 ### Serena context fetcher
 
@@ -241,18 +241,21 @@ A deterministic MCP stdio client (no LLM) drives Serena headless in CI to produc
 - Caps enumeration by changed-file count (overflow → skip enrichment for overflow files)
 - **Fails open** — if Serena is unavailable, OCR proceeds on diff + rules alone
 
-### `org_profiles` input (required for OCR)
+### Org profiles (centrally managed)
 
-Consuming workflows must pass the organization profiles as a comma-separated input:
+Which repo gets which review lanes is decided by the toolkit's central registry
+(`opencode-review/context/defaults/org-profiles.json`) — consuming workflows pass nothing:
 
-```yaml
-with:
-  org_profiles: backend/security,backend/sre
+```json
+{
+  "default": ["backend/security", "backend/sre"],
+  "repos": { "astronautsid/commercial-be": ["backend/security"] }
+}
 ```
 
-Valid values: `backend/security`, `backend/sre`, `frontend/security`, `frontend/sre`.
-Multi-profile repos use both backend and frontend profiles; `fullstack` = all four.
-**Fail-closed:** empty or unknown profiles abort the review.
+A repo entry **replaces** the default set; unlisted repos run on `default`. Valid values:
+`backend/security`, `backend/sre`, `frontend/security`, `frontend/sre`. Reassigning a repo
+is a one-line reviewed toolkit PR — every `@v4` consumer inherits on its next run.
 
 ### Tiered defaults (enforced at runtime)
 

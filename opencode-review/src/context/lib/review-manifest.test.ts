@@ -1,6 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { validateManifest, selectDirectives, mergeWithDefaults, resolveOrgProfiles } from "./review-manifest.js";
+import {
+  validateManifest,
+  selectDirectives,
+  mergeWithDefaults,
+  parseOrgProfilesRegistry,
+  resolveOrgProfilesFromRegistry,
+} from "./review-manifest.js";
 
 const BASE_MANIFEST = {
   schema_version: 1,
@@ -115,12 +121,7 @@ describe("validateManifest engine (schema v3)", () => {
     const manifest = {
       ...BASE_MANIFEST,
       schema_version: 3,
-      engine: {
-        ocr_model: "deepseek/deepseek-v4-pro",
-        ocr_cost_rates: { "deepseek/deepseek-v4-pro": { input_per_million: 0.14 } },
-        serena: true,
-        org_profiles_add: ["backend/security"],
-      },
+      engine: { ocr_model: "deepseek/deepseek-v4-pro", serena: true },
     };
     validateManifest(manifest);
   });
@@ -130,9 +131,11 @@ describe("validateManifest engine (schema v3)", () => {
     assert.throws(() => validateManifest(manifest), /engine requires schema_version 3/);
   });
 
-  it("rejects unknown engine keys", () => {
-    const manifest = { ...BASE_MANIFEST, schema_version: 3, engine: { ocr_llm_url: "https://x" } };
-    assert.throws(() => validateManifest(manifest), /engine contains unknown key ocr_llm_url/);
+  it("rejects unknown engine keys (centralized config is not repo-settable)", () => {
+    const manifest = { ...BASE_MANIFEST, schema_version: 3, engine: { org_profiles_add: ["backend/security"] } };
+    assert.throws(() => validateManifest(manifest), /engine contains unknown key org_profiles_add/);
+    const rates = { ...BASE_MANIFEST, schema_version: 3, engine: { ocr_cost_rates: { m: { input_per_million: 1 } } } };
+    assert.throws(() => validateManifest(rates), /engine contains unknown key ocr_cost_rates/);
   });
 
   it("rejects empty ocr_model", () => {
@@ -140,53 +143,47 @@ describe("validateManifest engine (schema v3)", () => {
     assert.throws(() => validateManifest(manifest), /engine.ocr_model must be a non-empty string/);
   });
 
-  it("rejects non-object ocr_cost_rates", () => {
-    const manifest = { ...BASE_MANIFEST, schema_version: 3, engine: { ocr_cost_rates: "cheap" } };
-    assert.throws(() => validateManifest(manifest), /engine.ocr_cost_rates must be a non-empty object/);
-  });
-
   it("rejects non-boolean serena", () => {
     const manifest = { ...BASE_MANIFEST, schema_version: 3, engine: { serena: "yes" } };
     assert.throws(() => validateManifest(manifest), /engine.serena must be a boolean/);
   });
-
-  it("rejects org_profiles_add outside the allowlist", () => {
-    const manifest = { ...BASE_MANIFEST, schema_version: 3, engine: { org_profiles_add: ["evil/profile"] } };
-    assert.throws(() => validateManifest(manifest), /outside the allowlist/);
-  });
-
-  it("rejects empty org_profiles_add array", () => {
-    const manifest = { ...BASE_MANIFEST, schema_version: 3, engine: { org_profiles_add: [] } };
-    assert.throws(() => validateManifest(manifest), /org_profiles_add must be a non-empty array/);
-  });
 });
 
-describe("resolveOrgProfiles", () => {
-  const DEFAULTS = {
-    locked: { org_profiles_baseline: ["backend/security"] },
-    bounded: {},
+describe("org-profiles registry", () => {
+  const REGISTRY = {
+    default: ["backend/security", "backend/sre"],
+    repos: { "astronautsid/commercial-be": ["backend/security"] },
   };
 
-  it("unions baseline, workflow input, and repo additions (deduped)", () => {
-    const manifest = {
-      ...BASE_MANIFEST,
-      schema_version: 3,
-      engine: { org_profiles_add: ["backend/sre", "backend/security"] },
-    } as ReturnType<typeof validateManifest>;
-    const profiles = resolveOrgProfiles(manifest, DEFAULTS, "backend/sre, frontend/security");
-    assert.deepStrictEqual(profiles, ["backend/security", "backend/sre", "frontend/security"]);
+  it("parses a valid registry", () => {
+    const r = parseOrgProfilesRegistry(REGISTRY);
+    assert.deepEqual(r.default, ["backend/security", "backend/sre"]);
+    assert.deepEqual(r.repos["astronautsid/commercial-be"], ["backend/security"]);
   });
 
-  it("returns workflow input alone when no baseline or engine additions", () => {
-    const manifest = { ...BASE_MANIFEST } as ReturnType<typeof validateManifest>;
-    const profiles = resolveOrgProfiles(manifest, null, "backend/security, backend/sre");
-    assert.deepStrictEqual(profiles, ["backend/security", "backend/sre"]);
+  it("rejects profiles outside the allowlist", () => {
+    assert.throws(() => parseOrgProfilesRegistry({ ...REGISTRY, default: ["evil/profile"] }), /outside the allowlist/);
   });
 
-  it("preserves baseline even when workflow input is empty", () => {
-    const manifest = { ...BASE_MANIFEST } as ReturnType<typeof validateManifest>;
-    const profiles = resolveOrgProfiles(manifest, DEFAULTS, "");
-    assert.deepStrictEqual(profiles, ["backend/security"]);
+  it("rejects unknown top-level keys", () => {
+    assert.throws(() => parseOrgProfilesRegistry({ ...REGISTRY, extra: 1 }), /unknown key extra/);
+  });
+
+  it("rejects empty or missing default", () => {
+    assert.throws(() => parseOrgProfilesRegistry({ ...REGISTRY, default: [] }), /default must be a non-empty array/);
+  });
+
+  it("rejects duplicates in default", () => {
+    assert.throws(
+      () => parseOrgProfilesRegistry({ ...REGISTRY, default: ["backend/security", "backend/security"] }),
+      /default contains duplicates/,
+    );
+  });
+
+  it("repo assignment replaces the default; unlisted repos fall back to default", () => {
+    const r = parseOrgProfilesRegistry(REGISTRY);
+    assert.deepEqual(resolveOrgProfilesFromRegistry(r, "astronautsid/commercial-be"), ["backend/security"]);
+    assert.deepEqual(resolveOrgProfilesFromRegistry(r, "astronautsid/some-new-repo"), ["backend/security", "backend/sre"]);
   });
 });
 

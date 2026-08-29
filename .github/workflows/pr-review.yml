@@ -3,10 +3,6 @@ name: PR Review (reusable)
 on:
   workflow_call:
     inputs:
-      org_profiles:
-        required: true
-        type: string
-        description: Comma-separated org profiles (backend/security, backend/sre, frontend/security, frontend/sre).
       ocr_model:
         required: false
         type: string
@@ -14,10 +10,6 @@ on:
         description: >-
           Explicit model override. Empty = resolve from REVIEW.md engine block,
           then org variable OCR_LLM_MODEL, then the toolkit default.
-      ocr_cost_rates:
-        required: false
-        type: string
-        default: ""
       ocr_version:
         required: false
         type: string
@@ -35,11 +27,11 @@ on:
         type: string
         default: "https://otlp-dev.astronauts.id/v1/metrics"
 
-# Credentials are toolkit-owned: org-level secrets are available inside reusable
-# workflows when callers use `secrets: inherit`. Consumers carry ZERO LLM/OTLP
-# secrets of their own — the required-secret declarations were removed on purpose.
-# Org secrets expected: OCR_LLM_URL, OCR_LLM_AUTH_TOKEN, OTLP_AUTH.
-# Org variable: OCR_LLM_MODEL (fallback model when REVIEW.md engine omits one).
+# Everything else is toolkit-owned central config:
+#   - org profiles   → context/defaults/org-profiles.json registry (repo-keyed)
+#   - cost rates     → context/defaults/cost-rates.json
+#   - credentials    → org-level secrets via `secrets: inherit`
+#     (OCR_LLM_URL, OCR_LLM_AUTH_TOKEN, OTLP_AUTH; org var OCR_LLM_MODEL)
 
 jobs:
   review:
@@ -60,9 +52,7 @@ jobs:
         uses: elbertcl/code-review-toolkit/opencode-review@v4
         with:
           use_github_token: true
-          org_profiles: ${{ inputs.org_profiles }}
           ocr_model: ${{ inputs.ocr_model }}
-          ocr_cost_rates: ${{ inputs.ocr_cost_rates }}
           ocr_version: ${{ inputs.ocr_version }}
           fail_closed_context: ${{ inputs.fail_closed_context }}
           issue_number: ${{ inputs.issue_number }}

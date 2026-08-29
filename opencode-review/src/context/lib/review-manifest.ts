@@ -41,9 +41,7 @@ export interface DiffLimits {
 
 export interface EngineConfig {
   ocr_model?: string;
-  ocr_cost_rates?: Record<string, unknown>;
   serena?: boolean;
-  org_profiles_add?: string[];
 }
 
 export interface Manifest {
@@ -62,7 +60,7 @@ export interface Manifest {
   engine?: EngineConfig;
 }
 
-const ENGINE_KEYS = new Set(["ocr_model", "ocr_cost_rates", "serena", "org_profiles_add"]);
+const ENGINE_KEYS = new Set(["ocr_model", "serena"]);
 
 const MANIFEST_KEYS = new Set([
   "schema_version", "policy_path",
@@ -85,19 +83,7 @@ function validateEngineConfig(value: unknown, field: string): asserts value is E
   const e = value as Record<string, unknown>;
   for (const key of Object.keys(e)) if (!ENGINE_KEYS.has(key)) fail(`${field} contains unknown key ${key}`);
   if (e.ocr_model !== undefined && (typeof e.ocr_model !== "string" || !e.ocr_model.trim())) fail(`${field}.ocr_model must be a non-empty string`);
-  if (e.ocr_cost_rates !== undefined) {
-    const rates = e.ocr_cost_rates as Record<string, unknown>;
-    if (typeof rates !== "object" || rates === null || Array.isArray(rates) || Object.keys(rates).length === 0) fail(`${field}.ocr_cost_rates must be a non-empty object`);
-  }
   if (e.serena !== undefined && typeof e.serena !== "boolean") fail(`${field}.serena must be a boolean`);
-  if (e.org_profiles_add !== undefined) {
-    if (!Array.isArray(e.org_profiles_add) || e.org_profiles_add.length === 0) fail(`${field}.org_profiles_add must be a non-empty array`);
-    for (const profile of e.org_profiles_add as unknown[]) {
-      if (typeof profile !== "string" || !(profile in ORGANIZATION_PROFILE_ALLOWLIST)) {
-        fail(`${field}.org_profiles_add contains a profile outside the allowlist: ${String(profile)}`);
-      }
-    }
-  }
 }
 
 function requireNonEmptyStrings(value: unknown, field: string): asserts value is string[] {
@@ -326,7 +312,6 @@ export interface ManifestDefaults {
     excluded_paths?: string[];
     diff_override?: DiffOverride;
     review_directives?: ReviewDirectiveEntry[];
-    org_profiles_baseline?: string[];
   };
   bounded: {
     diff_limits?: DiffLimits;
@@ -378,17 +363,37 @@ export function mergeWithDefaults(manifest: Manifest, defaults: ManifestDefaults
 }
 
 /**
- * Resolve the effective org profiles: locked baseline ∪ workflow input ∪ repo engine additions.
- * The baseline comes from manifest-defaults.json, the workflow input carries org-level mandates,
- * and `engine.org_profiles_add` (schema v3) lets a repo ADD profiles — never remove or replace.
+ * Central org-profiles registry (context/defaults/org-profiles.json).
+ * Sole source of which repo gets which profiles — repos and workflows no
+ * longer pass or extend profiles. A repo entry REPLACES the default set.
  */
-export function resolveOrgProfiles(
-  manifest: Manifest,
-  defaults: ManifestDefaults | null,
-  workflowInput: string,
-): string[] {
-  const baseline = defaults?.locked.org_profiles_baseline ?? [];
-  const additions = manifest.engine?.org_profiles_add ?? [];
-  const fromWorkflow = workflowInput.split(",").map((p) => p.trim()).filter(Boolean);
-  return [...new Set([...baseline, ...fromWorkflow, ...additions])];
+export interface OrgProfilesRegistry {
+  default: string[];
+  repos: Record<string, string[]>;
+}
+
+export function parseOrgProfilesRegistry(raw: unknown): OrgProfilesRegistry {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("org-profiles registry must be an object");
+  const r = raw as Record<string, unknown>;
+  for (const key of Object.keys(r)) if (key !== "default" && key !== "repos") throw new Error(`org-profiles registry contains unknown key ${key}`);
+  const validateSet = (value: unknown, field: string): string[] => {
+    if (!Array.isArray(value) || value.length === 0) throw new Error(`org-profiles registry ${field} must be a non-empty array`);
+    for (const profile of value as unknown[]) {
+      if (typeof profile !== "string" || !(profile in ORGANIZATION_PROFILE_ALLOWLIST)) {
+        throw new Error(`org-profiles registry ${field} contains a profile outside the allowlist: ${String(profile)}`);
+      }
+    }
+    return value as string[];
+  };
+  const def = validateSet(r.default, "default");
+  if (!r.repos || typeof r.repos !== "object" || Array.isArray(r.repos)) throw new Error("org-profiles registry repos must be an object");
+  for (const [repo, profiles] of Object.entries(r.repos)) validateSet(profiles, `repos.${repo}`);
+  if (def.length !== new Set(def).size) throw new Error("org-profiles registry default contains duplicates");
+  return { default: def, repos: r.repos as Record<string, string[]> };
+}
+
+/** Repo-specific assignment wins; unlisted repos run on the registry default. */
+export function resolveOrgProfilesFromRegistry(registry: OrgProfilesRegistry, repoFullName: string): string[] {
+  const assigned = registry.repos[repoFullName];
+  return assigned && assigned.length > 0 ? assigned : registry.default;
 }

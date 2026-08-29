@@ -78,28 +78,11 @@ inputs:
     description: OCR LLM auth token (required for OCR review).
     required: false
     default: ""
-  org_profiles:
-    description: >-
-      Comma-separated organization profiles (e.g. backend/security,backend/sre).
-      Required for OCR review. Valid values - backend/security, backend/sre,
-      frontend/security, frontend/sre.
-    required: false
-    default: "backend/security,backend/sre"
-
   ocr_model:
     description: >-
       OCR LLM model ID passed to `ocr config set llm.model`. Empty = resolve from
       the repo REVIEW.md `engine` block, then org variable OCR_LLM_MODEL, then the
       built-in default.
-    required: false
-    default: ""
-
-  ocr_cost_rates:
-    description: >-
-      Optional JSON mapping model IDs to per-million-token rates.
-      Example: {"deepseek/deepseek-v4-pro":{"input_per_million":0.14,"output_per_million":0.28,"cache_read_per_million":0.014}}
-      When omitted, tokens and elapsed are shown but no dollar cost. Empty = fall back
-      to the REVIEW.md `engine.ocr_cost_rates` block when present.
     required: false
     default: ""
 
@@ -407,20 +390,12 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
         FAIL_CLOSED_CONTEXT: ${{ inputs.fail_closed_context }}
-        ORG_PROFILES_INPUT: ${{ inputs.org_profiles }}
         OCR_MODEL_INPUT: ${{ inputs.ocr_model }}
-        OCR_RATES_INPUT: ${{ inputs.ocr_cost_rates }}
         SERENA_INPUT: ${{ inputs.serena }}
         ORG_MODEL_VAR: ${{ vars.OCR_LLM_MODEL }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
         PR_NUMBER: ${{ inputs.issue_number || github.event.pull_request.number || github.event.issue.number }}
       run: |
-        if [ -z "${ORG_PROFILES_INPUT}" ]; then
-          echo "::error::org_profiles is required. Valid values: backend/security, backend/sre, frontend/security, frontend/sre."
-          gh pr comment "${PR_NUMBER}" \
-            --repo "${{ github.repository }}" \
-            --body "**Review aborted:** missing required org_profiles input."
-          exit 1
-        fi
         node "${{ github.action_path }}/dist/context/resolve-manifest.js" \
           "REVIEW.md" \
           "${{ github.action_path }}/context/defaults/REVIEW.md" \
@@ -439,30 +414,27 @@ runs:
           exit 1
         fi
 
-        # ── Engine config (precedence: workflow input > REVIEW.md engine > org var > default) ──
+        # ── Central config: org-profiles registry + engine resolution ──────────
+        # Profiles come from the toolkit's org-profiles.json registry — repos and
+        # workflows no longer pass them. A repo entry replaces the default set.
         node --input-type=module -e "
           import { readFileSync, appendFileSync } from 'node:fs';
+          import { parseOrgProfilesRegistry, resolveOrgProfilesFromRegistry } from '${{ github.action_path }}/dist/context/lib/review-manifest.js';
+          const registry = parseOrgProfilesRegistry(JSON.parse(readFileSync('${{ github.action_path }}/context/defaults/org-profiles.json', 'utf8')));
+          const profiles = resolveOrgProfilesFromRegistry(registry, process.env.GITHUB_REPOSITORY);
+          appendFileSync(process.env.GITHUB_ENV, 'ORG_PROFILES_EFFECTIVE=' + profiles.join(',') + '\n');
+
           const manifest = JSON.parse(readFileSync('/tmp/resolved-manifest.json', 'utf8'));
           const engine = manifest.engine ?? {};
-          const env = {};
           const model = process.env.OCR_MODEL_INPUT || engine.ocr_model || process.env.ORG_MODEL_VAR || 'deepseek/deepseek-v4-pro';
-          env.OCR_MODEL_EFFECTIVE = model;
-          const rates = process.env.OCR_RATES_INPUT || (engine.ocr_cost_rates ? JSON.stringify(engine.ocr_cost_rates) : '');
-          if (rates) env.OCR_RATES_EFFECTIVE = rates;
-          for (const [k, v] of Object.entries(env)) {
-            if (String(v).includes('\n')) throw new Error(k + ' contains newlines');
-            appendFileSync(process.env.GITHUB_ENV, k + '=' + v + '\n');
-          }
-          console.log('engine resolved: model=' + model + ' rates=' + (rates ? 'set' : 'none'));
+          appendFileSync(process.env.GITHUB_ENV, 'OCR_MODEL_EFFECTIVE=' + model + '\n');
+          // Serena gating: input off OR engine off disables (fold both here; GITHUB_OUTPUT
+          // and GITHUB_ENV only apply to later steps, not this step's remaining bash).
+          const serenaEnabled = process.env.SERENA_INPUT === 'true' && engine.serena !== false;
+          appendFileSync(process.env.GITHUB_OUTPUT, 'serena_enabled=' + (serenaEnabled ? 'true' : 'false') + '\n');
+          console.log('config: repo=' + process.env.GITHUB_REPOSITORY + ' profiles=' + profiles.join(',') + ' model=' + model + ' serena=' + serenaEnabled);
         "
-        # Serena gating: input off OR engine off disables; engine cannot force-enable past an off input.
-        SERENA_ENABLED=true
-        [ "${SERENA_INPUT}" != "true" ] && SERENA_ENABLED=false
-        if node -pe "JSON.parse(require('fs').readFileSync('/tmp/resolved-manifest.json','utf8')).engine?.serena === false" | grep -q true; then
-          SERENA_ENABLED=false
-        fi
-        echo "serena_enabled=${SERENA_ENABLED}" >> "$GITHUB_OUTPUT"
-        echo "manifest: ${STATUS} — model=${OCR_MODEL_EFFECTIVE:-<unresolved>} serena=${SERENA_ENABLED}"
+        echo "manifest: ${STATUS} — model=${OCR_MODEL_EFFECTIVE:-resolved-in-node} (env applies to later steps)"
 
     # ── Serena cache ───────────────────────────────────────────────────────
     - name: Cache Serena uvx
@@ -670,11 +642,10 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
         SERENA_STATUS: ${{ steps.serena.outputs.status }}
-        ORG_PROFILES_INPUT: ${{ inputs.org_profiles }}
       run: |
         node --input-type=module -e "
           import { compileOcrRules } from '${{ github.action_path }}/dist/ocr/compile-ocr-rules.js';
-          import { globMatches, resolveOrgProfiles } from '${{ github.action_path }}/dist/context/lib/review-manifest.js';
+          import { globMatches } from '${{ github.action_path }}/dist/context/lib/review-manifest.js';
           import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
           const manifest = JSON.parse(readFileSync('/tmp/resolved-manifest.json', 'utf8'));
           let policyBody = existsSync(manifest.policy_path) ? readFileSync(manifest.policy_path, 'utf8') : '';
@@ -686,7 +657,9 @@ runs:
             resolvedDirectives = JSON.parse(readFileSync('/tmp/resolved-directives.json', 'utf8'));
           }
           const defaults = JSON.parse(readFileSync('${{ github.action_path }}/context/defaults/manifest-defaults.json', 'utf8'));
-          const orgProfiles = resolveOrgProfiles(manifest, defaults, process.env.ORG_PROFILES_INPUT || '');
+          // Profiles come from the central registry, resolved in the manifest step
+          // (ORG_PROFILES_EFFECTIVE env) — never from workflow inputs or REVIEW.md.
+          const orgProfiles = (process.env.ORG_PROFILES_EFFECTIVE || '').split(',').map(p => p.trim()).filter(Boolean);
           const rules = compileOcrRules({
             workspace: process.cwd(),
             changedFiles: [],
@@ -827,14 +800,12 @@ runs:
           const diffLines = parseDiffPatches(prFiles.map(f => ({ filename: f.filename, patch: f.patch })));
           const result = computeFindings({ findings, anchors, diffLines });
 
-          // Parse optional rate table for cost computation.
-          // Precedence: workflow input > REVIEW.md engine block (both already folded
-          // into OCR_RATES_EFFECTIVE by the manifest step; fall back to raw input).
+          // Cost rates are toolkit-owned: context/defaults/cost-rates.json is the single
+          // rate table; models not present there simply show no dollar cost.
           let rates = null;
-          const ratesInput = process.env.OCR_RATES_EFFECTIVE || '${{ inputs.ocr_cost_rates }}';
-          if (ratesInput) {
-            try { rates = JSON.parse(ratesInput); } catch { core.warning('ocr_cost_rates is not valid JSON - cost will be omitted'); }
-          }
+          try {
+            rates = JSON.parse(readFileSync('${{ github.action_path }}/context/defaults/cost-rates.json', 'utf8'));
+          } catch { core.warning('cost-rates.json unreadable - cost will be omitted'); }
 
           const { computeCost } = await import('\${{ github.action_path }}/dist/ocr/compute-cost.js');
           const cost = computeCost(
@@ -964,7 +935,7 @@ runs:
         ENGINE: ocr
         REPO: ${{ github.repository }}
         MODEL: ${{ env.OCR_MODEL_EFFECTIVE || inputs.ocr_model }}
-        ORG_PROFILES: ${{ inputs.org_profiles }}
+        ORG_PROFILES: ${{ env.ORG_PROFILES_EFFECTIVE }}
         OCR_CACHE_HIT: ${{ env.ocr_cache_hit }}
         OCR_INSTALL_MS: ${{ env.ocr_install_ms }}
       run: |

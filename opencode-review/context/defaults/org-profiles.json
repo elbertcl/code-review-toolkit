@@ -1,0 +1,4 @@
+{
+  "default": ["backend/security", "backend/sre"],
+  "repos": {}
+}

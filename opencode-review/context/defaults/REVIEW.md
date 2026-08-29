@@ -29,13 +29,13 @@
 <!--
   Optional per-repo engine preferences (schema_version 3). Uncomment and set
   schema_version to 3 above to use. Precedence: workflow input > engine block >
-  org variable OCR_LLM_MODEL > toolkit default. Credentials never go here.
+  org variable OCR_LLM_MODEL > toolkit default. Credentials, cost rates, and
+  org profiles never go here — they are toolkit-owned central config
+  (context/defaults/cost-rates.json, context/defaults/org-profiles.json).
 
   "engine": {
     "ocr_model": "deepseek/deepseek-v4-pro",
-    "ocr_cost_rates": {"deepseek/deepseek-v4-pro": {"input_per_million": 0.14, "output_per_million": 0.28}},
-    "serena": true,
-    "org_profiles_add": ["backend/security"]
+    "serena": true
   }
 -->
 
